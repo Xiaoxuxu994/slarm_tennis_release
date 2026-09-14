@@ -54,6 +54,19 @@ from src.dataset.stream25 import (
     STREAM25_CONTEXT_FRAMES,
 )
 
+#: 终端观测在**目标列表**里的下标。
+#
+# ★ 这是滑窗里最容易搞反的一件事，我自己就搞反过一次（IndexError: index 24 is
+#   out of bounds for dimension 1 with size 22）。ball_position_rig /
+#   ball_velocity_rig 走的是 _collate_stream25_frames 的 preserve_time_axes，
+#   时间轴就是**目标列表**，长度 25-offset，不是绝对帧号。offset 0 时下标恰好
+#   等于帧号，所以一路没暴露。
+#
+#   shifted_contract 保证任何 offset 下 targets[15] 都是终端观测，所以这些
+#   张量一律用固定下标 15，**不加 offset**。只有做时间算术（到接球帧还有多少
+#   秒）时才需要绝对帧号 = 15 + offset。
+TERMINAL_TARGET_INDEX = STREAM25_CONTEXT_FRAMES[-1]
+
 # ball token 的并列落点指标名（不进 ACCEPTANCE_TABLE，只做对照）。
 BALL_TOKEN_METRIC_NAMES = (
     "frame24_position_balltoken",
@@ -291,11 +304,8 @@ def compute_balltoken_frame24_metrics(
     }
     # frame-15 truth is optional: ball_velocity_rig in particular is not emitted by
     # every dataset, so those two diagnostics drop out instead of failing the scene.
-    # ball_position_rig is indexed by ABSOLUTE frame, while the model's readout is
-    # always "the terminal observation". Under a slid window those differ by the
-    # offset, so the GT index has to move with it or the metric silently compares
-    # the terminal state against the wrong instant.
-    terminal = STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)
+    # 目标列表下标，不加 offset —— 见 TERMINAL_TARGET_INDEX 的说明。
+    terminal = TERMINAL_TARGET_INDEX
     gt_pos15 = data_dict.get("ball_position_rig")
     if gt_pos15 is not None:
         gt = gt_pos15[0, terminal].float().cpu()
@@ -343,7 +353,7 @@ def _balltoken_fit_metrics(prefix_states, data_dict, gt_pos24, *,
     if gt_pos15 is not None:
         truth = gt_pos15[0].float().cpu()
         for step, frame in enumerate(STREAM25_CONTEXT_FRAMES[: states.shape[0] - 1]):
-            error = float((states[step, :3] - truth[frame + int(context_offset)]).norm().item())
+            error = float((states[step, :3] - truth[frame]).norm().item())
             if math.isfinite(error):
                 out[f"ball_prefix_pos_error_frame{frame}"] = error
 
@@ -365,8 +375,7 @@ def _balltoken_fit_metrics(prefix_states, data_dict, gt_pos24, *,
         gt_v = data_dict.get("ball_velocity_rig")
         if gt_v is not None:
             out["ball_vel15_error_balltoken_vavg"] = float(
-                (averaged - gt_v[0, STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)]
-                 .float().cpu()).norm().item())
+                (averaged - gt_v[0, TERMINAL_TARGET_INDEX].float().cpu()).norm().item())
         predicted = integrate_frame24_position_physics(
             states[-1, :3], averaged, dt, gravity_vec)
         out["frame24_position_balltoken_vavg"] = float((predicted - gt_pos24).norm().item())
@@ -383,13 +392,11 @@ def _balltoken_fit_metrics(prefix_states, data_dict, gt_pos24, *,
     out["frame24_position_balltoken_fit"] = float((pred_pos24 - gt_pos24).norm().item())
     if gt_pos15 is not None:
         out["ball_pos15_error_balltoken_fit"] = float(
-            (pos15 - gt_pos15[0, STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)]
-             .float().cpu()).norm().item())
+            (pos15 - gt_pos15[0, TERMINAL_TARGET_INDEX].float().cpu()).norm().item())
     gt_v15 = data_dict.get("ball_velocity_rig")
     if gt_v15 is not None:
         out["ball_vel15_error_balltoken_fit"] = float(
-            (v15 - gt_v15[0, STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)]
-             .float().cpu()).norm().item())
+            (v15 - gt_v15[0, TERMINAL_TARGET_INDEX].float().cpu()).norm().item())
     return out
 
 
@@ -492,7 +499,7 @@ def compute_rendered_history_fit_metrics(
             finite = [p for p in per_frame[index] if p is not None and torch.isfinite(p).all()]
             if not finite:
                 continue
-            truth = gt_positions[frame + int(context_offset)]
+            truth = gt_positions[frame]
             worst = max(float((p - truth).norm().item()) for p in finite)
             if math.isfinite(worst):
                 out[f"pixel_pos_error_frame{frame}"] = worst
@@ -520,8 +527,7 @@ def compute_rendered_history_fit_metrics(
         predicted = integrate_frame24_position_physics(pos15, v15, dt, gravity)
         errors.append(float((predicted - gt_pos24).norm().item()))
         if gt_positions is not None:
-            pos_errors.append(float(
-                (pos15 - gt_positions[frames[-1] + int(context_offset)]).norm().item()))
+            pos_errors.append(float((pos15 - gt_positions[frames[-1]]).norm().item()))
         if gt_v15 is not None:
             vel_errors.append(float((v15 - gt_v15).norm().item()))
     for name, values in (("frame24_position_fit", errors),
@@ -1007,9 +1013,7 @@ def compute_stream25_scene_metrics(
     landing_index = min(
         STREAM25_ALL_TARGET_FRAMES[-1], int(data_dict["target_time"].shape[1]) - 1
     )
-    gt_pos24 = data_dict["ball_position_rig"][
-        0, landing_index + int(context_offset)
-    ].float().cpu()
+    gt_pos24 = data_dict["ball_position_rig"][0, landing_index].float().cpu()
     canonical_to_rig = data_dict["context_canonical_to_rig"][0, -1].float().cpu()
     dt = float(
         (
@@ -1044,9 +1048,7 @@ def compute_stream25_scene_metrics(
         # so a literal 15 would score the slid window's terminal state against
         # the wrong instant -- quietly, with a plausible-looking number.
         None if data_dict.get("ball_velocity_rig") is None
-        else data_dict["ball_velocity_rig"][
-            0, STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)
-        ].float().cpu(),
+        else data_dict["ball_velocity_rig"][0, TERMINAL_TARGET_INDEX].float().cpu(),
         dt=dt, timespan=timespan,
         ball_surface_offset=ball_surface_offset,
         fit_frames=balltoken_fit_frames,
@@ -1079,6 +1081,9 @@ def compute_stream25_scene_metrics(
     # day the simulator gains drag this continuation has to be replaced by stored
     # GT (see docs/EXPERIMENTS_AND_ERROR_BUDGET.md).
     catch_metrics: Dict[str, float] = {}
+    # 两个不同的东西，混起来就是上面那个 IndexError 的来源：
+    #   TERMINAL_TARGET_INDEX  张量下标，恒为 15
+    #   terminal_frame         绝对帧号，= 15 + offset，只用来算还剩多少秒
     terminal_frame = STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)
     _gt_v_all = data_dict.get("ball_velocity_rig")
     if catch_frame and _gt_positions is not None and _gt_v_all is not None:
@@ -1086,8 +1091,8 @@ def compute_stream25_scene_metrics(
         catch_dt = (int(catch_frame) - terminal_frame) * float(timespan) / float(span)
         gravity = torch.tensor(MS3_GRAVITY_RIG, dtype=torch.float32)
         gt_catch = integrate_frame24_position_physics(
-            _gt_positions[0, terminal_frame].float().cpu(),
-            _gt_v_all[0, terminal_frame].float().cpu(),
+            _gt_positions[0, TERMINAL_TARGET_INDEX].float().cpu(),
+            _gt_v_all[0, TERMINAL_TARGET_INDEX].float().cpu(),
             catch_dt, gravity,
         )
         catch_metrics["catch_horizon_s"] = catch_dt
@@ -1178,10 +1183,14 @@ def compute_stream25_scene_metrics(
         from src.utils.ball_residual_diagnostics import residual_diagnostics
         diagnostics = residual_diagnostics(
             predictions["ball_v15_base"], predictions["ball_v15_residual"], predictions["ball_v15"],
-            data_dict["ball_velocity_rig"][:, terminal_frame].to(predictions["ball_v15"]),
+            # 下标用 TERMINAL_TARGET_INDEX（目标序），杠杆臂用 terminal_frame
+            # （绝对帧号）—— 两者在 offset>0 时不同，混用会越界。
+            data_dict["ball_velocity_rig"][:, TERMINAL_TARGET_INDEX].to(predictions["ball_v15"]),
             predictions["ball_pos15"],
-            data_dict["ball_position_rig"][:, terminal_frame].to(predictions["ball_pos15"]),
-            dt24=dt, dt45=(45 - terminal_frame) * float(timespan) / 24)
+            data_dict["ball_position_rig"][:, TERMINAL_TARGET_INDEX].to(predictions["ball_pos15"]),
+            dt24=dt,
+            dt45=(int(catch_frame or 45) - terminal_frame) * float(timespan)
+                 / (STREAM25_ALL_TARGET_FRAMES[-1] - STREAM25_ALL_TARGET_FRAMES[0]))
         scene_result["velocity_residual"] = {key: float(value[0]) for key, value in diagnostics.items()}
     return scene_result
 
@@ -1399,11 +1408,11 @@ def run_evaluation(
     args.stream25_context_offset = context_offset
     catch_frame = int(getattr(args, "stream25_catch_frame", 0) or 0)
     if context_offset:
-        terminal = STREAM25_CONTEXT_FRAMES[-1] + context_offset
+        terminal_frame = STREAM25_CONTEXT_FRAMES[-1] + context_offset
         print(
             f"[eval] context window slid +{context_offset}: "
             f"{tuple(f + context_offset for f in STREAM25_CONTEXT_FRAMES)}, "
-            f"terminal frame {terminal}. frame24_* is NOT comparable to offset 0; "
+            f"terminal frame {terminal_frame}. frame24_* is NOT comparable to offset 0; "
             f"read catch_position instead.",
             flush=True,
         )

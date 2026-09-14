@@ -190,24 +190,85 @@ def test_eval_source_compiles_not_just_parses():
     compile(_EVAL_SRC.read_text(), str(_EVAL_SRC), "exec")
 
 
-def test_no_bare_frame_fifteen_or_twentyfour_gt_lookups_remain():
-    """GT is indexed by ABSOLUTE frame, so a literal 15/24 ignores the offset."""
+def test_gt_lookups_do_not_add_the_offset():
+    """GT tensors are TARGET-indexed, not absolute-frame indexed.
+
+    ball_position_rig / ball_velocity_rig go through
+    _collate_stream25_frames' preserve_time_axes, so their time axis is the
+    target list: length 25 - offset, entry i holding the truth for absolute
+    frame i + offset. At offset 0 the index equals the frame number, which is
+    why treating them as absolute-frame tensors survived every earlier run and
+    then blew up on the first slid window:
+
+        IndexError: index 24 is out of bounds for dimension 1 with size 22
+
+    shifted_contract pins targets[15] to the terminal observation at every
+    offset, so the correct index is the constant 15; adding the offset is the
+    bug, not the fix.
+
+    ★ This check walks the AST rather than scanning lines. A line-based regex
+      was written first and missed two of the four real spellings: one where
+      the tensor name sat on the previous line of a wrapped call, and one where
+      the offset was folded into a variable that was then used as the index.
+      Guards that enumerate spellings keep losing to the spellings nobody
+      enumerated.
+    """
+    tree = _eval_tree()
+    gt_names = ("ball_position_rig", "ball_velocity_rig", "gt_pos15", "gt_v15",
+                "gt_v", "gt_positions", "truth")
+
+    # 污点按**函数作用域**算，不是整模块：两个函数里都有叫 terminal 的局部变量，
+    # 一个是目标序下标、一个是绝对帧号，模块级的污点分析会把前者一起误报。
+    functions = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    offenders = []
+    for function in functions:
+        tainted = {
+            target.id
+            for node in ast.walk(function) if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name) and "context_offset" in ast.unparse(node.value)
+        }
+        _scan(function, gt_names, tainted, offenders)
+    assert not offenders, f"GT lookup indexed with the offset: {offenders}"
+
+
+def _scan(function, gt_names, tainted, offenders):
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Subscript):
+            continue
+        base = ast.unparse(node.value)
+        if not any(name in base for name in gt_names):
+            continue
+        # 取下标里真正出现的标识符，别用字符串切分 —— "(0, terminal)" 被
+        # split() 切出来是 ["(0,", "terminal)"]，带括号就永远匹配不上。
+        used = {n.id for n in ast.walk(node.slice) if isinstance(n, ast.Name)}
+        index = ast.unparse(node.slice)
+        if "context_offset" in index or used & tainted:
+            offenders.append(f"{base}[{index}]")
+
+
+def test_terminal_target_index_is_a_constant_not_an_offset_expression():
     source = _EVAL_SRC.read_text()
-    # ★ 这个列表漏过一次。第一版只写了局部变量的写法（gt_v15[0, 15]），
-    #   于是调用点上的 data_dict["ball_velocity_rig"][0, 15] 活了下来。
-    #   所以下面用正则扫「任何 *_rig 张量被字面量 15/24 索引」，而不是逐个列举写法。
+    assert "TERMINAL_TARGET_INDEX = STREAM25_CONTEXT_FRAMES[-1]" in source
+
+
+def test_absolute_frame_is_used_only_for_time_arithmetic():
+    """terminal_frame = 15 + offset is right for seconds, wrong for indexing."""
     import re
-    leaked = re.findall(r'(?:ball_(?:position|velocity)_rig"?\]?|gt_pos15|gt_v15|gt_v|gt_positions)'
-                        r'\[0?,?\s*(?:15|24)\]', source)
-    assert not leaked, f"offset-blind GT lookups still present: {sorted(set(leaked))}"
-    for bad in ('ball_position_rig"][0, 24]',
-                'ball_velocity_rig"][0, 15]',
-                'gt_pos15[0, 15]',
-                'gt_v15[0, 15]',
-                'gt_v[0, 15]',
-                'gt_positions[15]',
-                'target_time"][0, 24, 0]'):
-        assert bad not in source, f"offset-blind GT lookup still present: {bad}"
+    source = _EVAL_SRC.read_text()
+    for match in re.finditer(r"\[0, terminal_frame\]", source):
+        raise AssertionError("terminal_frame is an absolute frame, not an index")
+    assert "terminal_frame = STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)" in source
+
+
+@pytest.mark.parametrize("offset,length", [(0, 25), (3, 22), (6, 19), (9, 16)])
+def test_gt_tensor_length_is_the_target_count(offset, length):
+    """The length that the IndexError reported: 22 at offset 3, not 25."""
+    _, targets = shifted_contract(offset)
+    assert len(targets) == length
+    assert targets[15] == 15 + offset, "the terminal must stay at index 15"
+    # Index 24 only exists at offset 0; that is exactly what blew up.
+    assert (24 < len(targets)) == (offset == 0)
 
 
 def test_catch_metric_is_registered_everywhere_it_is_aggregated():
