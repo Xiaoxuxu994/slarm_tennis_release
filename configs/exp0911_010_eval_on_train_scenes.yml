@@ -1,0 +1,138 @@
+# 评测口径不变，只把场景集合换成**训练集**。用来回答一个问题：
+#
+#     像素路径也有 4 倍的训练/验证差距吗？
+#
+# 为什么需要这一跑。exp0911_010 冻结 exp0908_003/ckpt_007999，而 0908_003 正是在
+# scene_list/ball_catch_triview_0903_2k_train.txt 上训练的，所以那 1800 个场景是
+# 模型真正见过的。它的训练日志给出了 ball token 的物理量纲误差：
+#
+#     stream25_ball_vel_l2_ms   0.0257 m/s      （训练场景，均值）
+#     验证评测 balltoken vel15   0.101  m/s      （验证场景，中位数）
+#                                                 差 3.9 倍
+#
+# 但训练日志里**没有**像素路径的 m/s 口径误差 —— ms3_ball_raw 是 v/5.0、a/9.81、
+# j/1.0 三项归一化后混在一起的 smooth_l1，换不回物理单位。所以像素路径的泛化能力
+# 至今未知，而它恰好是下一轮实验要走的那条路。
+#
+# 方法。只改 eval_annotation。走的仍然是 Stream25EvalDataset（全 25 个 target、
+# 三目取最差、跨场景中位数），和验证评测逐字节同口径，唯一的差别是场景集合。
+# 不要用 --split train：那会走 Stream25Dataset(training=True)，只出 7 个
+# scheduler target，和验证不可比，而且会触发 target 数量断言。
+#
+# 场景数也对齐。验证集 200 个场景，训练集 1800 个。中位数对样本量不敏感但 p95 敏感，
+# 而且 1800 个场景要跑 9 倍时间。所以取训练 manifest 的前 200 个：
+#
+#     head -n 200 data/slarm_data/scene_list/ball_catch_triview_0903_2k_train.txt \
+#       > data/slarm_data/scene_list/ball_catch_triview_0903_2k_train_first200.txt
+#
+# 怎么读结果。和验证那张表逐行对照，重点是这两行：
+#
+#     ball velocity med      像素路径（MS3 头）    验证 0.099
+#     balltoken vel15        ball token           验证 0.101
+#
+#   像素路径 ≈ 0.10（无差距）
+#       泛化问题是 ball token 独有的。它是 1536 维 token 上的小 MLP，1800 场景 ×
+#       3 个速度标量，背下来很容易；像素路径读的是渲染出来的几何，记忆自由度小得多。
+#       -> 砍掉 ball token，全力走像素/几何路线。
+#
+#   像素路径 ≈ 0.026（同样 4 倍）
+#       泛化是系统性的，换读出方式救不了。瓶颈是每个场景的监督标量太少
+#       （速度 3 个 vs 重建 10^6 量级，而重建的验证指标全部达标）。
+#       -> 别再调架构，去加场景数。
+#
+# ball token 那两行会顺带复现 0.026，可以当这一跑的自检：如果它没落在 0.026
+# 附近，说明训练日志和评测的口径不同，整个对比作废。
+#
+# 这里不改任何权重、损失或架构，load_from 和 010 完全一致 —— 它只是同一份权重
+# 换一批场景再测一次。
+model: slarm
+dataset: [ball_catch_triview_0903_2k]
+data_root: data/slarm_data
+input_size: [320, 240]
+patch_size: 8
+embed_dim: 768
+depth: 12
+patch_embed: conv
+num_max_cameras: 3
+num_context_timesteps: 6
+num_target_timesteps: 7
+context_stride: 3
+timespan: 0.8
+mode: window_6
+stream25_catch_frame: 45
+stream25_ball_radius: 0.0325
+use_affine_token: true
+use_sky_token: true
+use_ms3_motion: true
+use_last_token: true
+shortcut_rgb: true
+add_patch_plucker_embed: true
+sigmoid_rgb: true
+num_motion_tokens: 0
+strict_data_loading: true
+enable_task_semantic_head: true
+terminal_context_extrapolation: true
+stream25_render_target_chunk_size: 7
+stream25_reconstruction_loss: true
+use_ball_token: false
+use_ball_token_intrunk: true
+ball_token_freeze_backbone: false
+ball_pos_supervision: pooled
+ball_prefix_supervision: false
+ball_temporal_refine: false
+ball_velocity_residual: true
+ball_velocity_only_train: true
+ball_velocity_hidden_dim: 256
+stream25_ball_prefix_pos_weight: 0
+stream25_ball_prefix_vel_weight: 0
+stream25_ball_prefix_landing_weight: 0
+stream25_ball_pos_weight: 0
+stream25_ball_vel_weight: 1
+stream25_ball_traj_weight: 0.5
+stream25_landing_weight: 0.5
+stream25_rgb_weight: 1
+stream25_lpips_weight: 0.05
+stream25_ball_rgb_weight: 0.5
+stream25_depth_relative_weight: 1
+stream25_ball_depth_metric_weight: 0.5
+stream25_semantic_weight: 1
+stream25_ms3_ball_weight: 1
+stream25_ms3_static_weight: 0.25
+stream25_opacity_weight: 0.1
+stream25_ms3_velocity_scale: 5
+stream25_ms3_acceleration_scale: 9.81
+stream25_ms3_jerk_scale: 1
+terminal_dynamic_velocity_threshold: 1
+stream25_semantic_class_weight_cap: 10
+online_feat: false
+enable_feat_loss: false
+feat_loss_coeff: 0
+stream25_lseg_feature_weight: 0
+enable_depth_loss: true
+enable_sky_opacity_loss: true
+enable_perceptual_loss: true
+perceptual_weight: 0.05
+perceptual_loss_start_iter: 0
+load_depth: true
+lr: 0.0001
+stream25_trunk_lr: 0.0001
+lr_sched: cosine
+min_lr: 1e-7
+warmup_iters: 200
+batch_size: 1
+seed: 20260911
+load_from: work_dirs/slarm/exp0908_003_slarm_stream25_0903_2k_balltoken_intrunk_landing/checkpoints/ckpt_007999.pth
+train_annotation: scene_list/ball_catch_triview_0903_2k_train.txt
+eval_annotation: scene_list/ball_catch_triview_0903_2k_train_first200.txt
+num_iterations: 4000
+ckpt_every_n_iters: 1000
+vis_every_n_iters: 2000
+num_vis_samples: 2
+eval_every_n_iters: 50000
+keep_n_ckpts: 4
+project: slarm
+ball_velocity_history: true
+ball_velocity_use_time: true
+ball_velocity_use_difference: true
+stream25_ball_delta_v_weight: 0.01
+exp_name: exp0911_010_eval_on_train_scenes
