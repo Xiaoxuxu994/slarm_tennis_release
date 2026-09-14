@@ -1,6 +1,24 @@
 """Detached per-scene diagnostics for the frozen velocity residual experiment."""
 
+import math
+
 import torch
+
+
+def velocity_unit_diagnostics(values: dict, velocity_scale: float) -> dict:
+    """Add physical m/s and dimensionless loss-space aliases; never rescale predictions."""
+    if not math.isfinite(velocity_scale) or velocity_scale <= 0:
+        raise ValueError("Velocity loss scale must be finite and positive")
+    keys = [f"{name}_{axis}" for name in ("base", "delta", "final", "gt", "correction_target")
+            for axis in "xyz"]
+    keys += [f"delta_abs_{axis}" for axis in "xyz"]
+    keys += ["delta_magnitude", "target_magnitude", "base_velocity_error", "final_velocity_error"]
+    out = {}
+    for key in keys:
+        if key in values:
+            out[f"{key}_mps"] = values[key]
+            out[f"{key}_normalized"] = values[key] / velocity_scale
+    return out
 
 
 def residual_diagnostics(base: torch.Tensor, delta: torch.Tensor, final: torch.Tensor,
