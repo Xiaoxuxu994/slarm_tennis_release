@@ -40,6 +40,8 @@ DATASETS = {
     # ★ 本批世界系 z=0 在 base_link 那一层，地面在 z ~ -0.10 m（0901 是 z=0）。
     #   这只影响"离地高度"这种人读的量，不影响这两个矩阵。
     "ball_catch_triview_0903_2k": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
+    # Assumes the 0903 rig convention; verify the new annotations before training.
+    "ball_catch_triview_0908_10k": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
 }
 
 waymo_train = "scene_list/waymo_train.txt"  # NOTE: Use full data for multi-GPU
@@ -321,6 +323,20 @@ DATASET_DICT = {
         "num_target_timesteps": 7,
         "annotation_txt_file_train": "scene_list/ball_catch_triview_0903_2k_train.txt",
         "annotation_txt_file_val": "scene_list/ball_catch_triview_0903_2k_validation.txt",
+        "camera_list": {
+            2: ["front_left", "front_right"],
+            3: ["front_left", "front_right", "lower_front"],
+        },
+        "ref_camera": "front_left",
+    },
+
+    "ball_catch_triview_0908_10k": {
+        "size": [320, 240],
+        "temporal": True,
+        "num_context_timesteps": 6,
+        "num_target_timesteps": 7,
+        "annotation_txt_file_train": "scene_list/ball_catch_triview_0908_10k_train.txt",
+        "annotation_txt_file_val": "scene_list/ball_catch_triview_0908_10k_validation.txt",
         "camera_list": {
             2: ["front_left", "front_right"],
             3: ["front_left", "front_right", "lower_front"],
