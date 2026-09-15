@@ -41,7 +41,20 @@ ROWS: Tuple[Tuple[str, str, str], ...] = (
 def find_report(path: Path) -> Path:
     """Accept the json itself, or a directory holding exactly one."""
     if path.is_file():
-        return path
+        if path.suffix == ".json":
+            return path
+        # The markdown report sits beside the json and is the easier name to
+        # reach for; it holds only the aggregate scope, which is the very table
+        # this tool exists to go beyond.
+        sibling = path.with_suffix(".json")
+        if sibling.is_file():
+            print(f"note: {path.name} is the markdown report; reading {sibling.name}.")
+            return sibling
+        raise SystemExit(f"[FAIL] {path} is not JSON and {sibling.name} is not beside it")
+    if path.suffix and not path.exists():
+        sibling = path.with_suffix(".json")
+        if sibling.is_file():
+            return sibling
     if path.is_dir():
         found = sorted(path.rglob("evaluation.json"))
         if len(found) == 1:
