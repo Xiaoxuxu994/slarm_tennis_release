@@ -38,13 +38,68 @@ ROWS: Tuple[Tuple[str, str, str], ...] = (
 )
 
 
+def find_report(path: Path) -> Path:
+    """Accept the json itself, or a directory holding exactly one."""
+    if path.is_file():
+        return path
+    if path.is_dir():
+        found = sorted(path.rglob("evaluation.json"))
+        if len(found) == 1:
+            return found[0]
+        if not found:
+            raise SystemExit(f"[FAIL] no evaluation.json under {path}")
+        raise SystemExit("[FAIL] several reports under that directory; name one:\n  "
+                         + "\n  ".join(str(f) for f in found[:10]))
+    raise SystemExit(f"[FAIL] no such file or directory: {path}\n"
+                     f"       eval.sh writes to "
+                     f"work_dirs/slarm/stream25_eval/<config>/<ckpt>/evaluation.json")
+
+
 def read_scopes(path: Path) -> Dict[str, Dict[str, Any]]:
+    """Per-view metrics, from the top-level scopes or rebuilt from per_scene.
+
+    Reports written before scope_reports existed still carry every scope inside
+    each scene, so falling back to those keeps this usable on older runs rather
+    than failing on a report that does contain the answer.
+    """
     with path.open() as handle:
         report = json.load(handle)
+    if not isinstance(report, dict):
+        raise SystemExit(f"[FAIL] {path} is not a JSON object")
+
     scopes = report.get("scope_reports")
-    if not isinstance(scopes, dict) or not scopes:
-        raise SystemExit(f"[FAIL] {path} has no scope_reports")
-    return {name: entry.get("metrics", {}) for name, entry in scopes.items()}
+    if isinstance(scopes, dict) and scopes:
+        return {name: entry.get("metrics", {}) for name, entry in scopes.items()}
+
+    scenes = report.get("per_scene")
+    if isinstance(scenes, list) and scenes:
+        names: List[str] = []
+        for scene in scenes:
+            for name in (scene.get("scopes") or {}):
+                if name not in names:
+                    names.append(name)
+        if names:
+            print(f"note: {path.name} has no scope_reports; "
+                  f"taking the median across {len(scenes)} scenes instead.")
+            rebuilt: Dict[str, Dict[str, Any]] = {}
+            for name in names:
+                merged: Dict[str, Any] = {}
+                for key, sub in {(k, s) for _, k, s in ROWS}:
+                    values = []
+                    for scene in scenes:
+                        node = ((scene.get("scopes") or {}).get(name) or {}).get("metrics", {})
+                        number = value(node, key, sub)
+                        if number is not None:
+                            values.append(number)
+                    if values:
+                        merged.setdefault(key, {})[sub] = sorted(values)[len(values) // 2]
+                rebuilt[name] = merged
+            return rebuilt
+
+    raise SystemExit(
+        f"[FAIL] {path} carries neither scope_reports nor per_scene scopes.\n"
+        f"       top-level keys present: {sorted(report)[:14]}"
+    )
 
 
 def value(metrics: Dict[str, Any], key: str, sub: str) -> Optional[float]:
@@ -65,8 +120,7 @@ def main() -> int:
     cli = parser.parse_args()
 
     for path in cli.reports:
-        if not path.is_file():
-            raise SystemExit(f"[FAIL] not a file: {path}")
+        path = find_report(path)
         scopes = read_scopes(path)
         # aggregate first, then the named views in report order
         names: List[str] = (["aggregate"] if "aggregate" in scopes else [])
