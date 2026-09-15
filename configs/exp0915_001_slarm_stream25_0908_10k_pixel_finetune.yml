@@ -74,13 +74,54 @@ perceptual_weight: 0.05
 perceptual_loss_start_iter: 0
 load_depth: true
 
-# Four GPUs, global batch 4. Around 8 epochs for 10k training scenes.
-# Train both trunk and pixel heads; pixel-only does NOT mean frozen trunk.
-lr: 0.00002
-stream25_trunk_lr: 0.000002
+# Four GPUs, global batch 4. Train both trunk and pixel heads; pixel-only does
+# NOT mean frozen trunk.
+#
+# Epochs = num_iterations * global_batch / training scenes, so 20000 steps is
+# 8 epochs over 10k scenes and 4 over 20k. Do NOT apply the exp0908_001 rule
+# (num_iterations = 40 * scenes / 4): at this scale it asks for 200k steps,
+# about 113 hours at the measured 2.04 s/step. More data should buy sample
+# diversity, not more passes over the same scenes -- the whole point is that
+# the ball trajectory is what gets memorised.
+#
+# ---- LR: raised from 2e-5/2e-6 after measuring the zero-shot gap ----
+#
+# The 0903_2k pixel checkpoint evaluated on this dataset without training:
+#
+#                       aggregate  front_left  front_right  lower_front
+#   ball IoU farthest      0.1732      0.2680       0.2831       0.0000
+#   ball depth med far     0.0594      0.0517       0.0496       2.8646
+#   RGB PSNR anchor       29.1352     29.8275      29.9366      27.6749
+#   depth absrel far       0.1009      0.0432       0.0435       0.2159
+#
+# Two things, not one. In lower_front the ball is not merely worse, it is
+# absent: IoU exactly zero at the extrapolated frames, and a 2.86 m depth
+# error on ball pixels is the background behind the ball, i.e. no ball
+# Gaussian is rendered there at all. The catch ring is hollow in this data, so
+# that camera now sees through it and the ball with it; a model trained where
+# a net blocked that view in most scenes never had to put anything there.
+# But lower_front also loses 2.2 dB of RGB and five times the depth error, so
+# this is not only a ball problem -- the whole view changed.
+#
+# And the front pair regressed on their own: ball IoU at the far frames falls
+# from 0.63 to 0.27. The old 0.63 was effectively the front pair alone, since
+# an occluded lower_front has an empty GT ball mask and drops out of the
+# average rather than scoring zero.
+#
+# That is the size of an adaptation, not a continuation. exp0908_001 crossed a
+# comparable gap (simulator backgrounds to room Gaussian renders) at 7e-5 with
+# a 1000-step warmup. 2e-5 is 3.5x below that and risks spending 11 hours
+# under-fitting a view that currently renders no ball. 5e-5 keeps some of the
+# damping that 11x more data makes affordable without giving up the adaptation.
+#
+# If the first 2000 steps show RGB or depth degrading rather than recovering,
+# that is the signal to come back down, and the 2000-step checkpoints make it
+# visible without waiting for the end.
+lr: 0.00005
+stream25_trunk_lr: 0.000005
 lr_sched: cosine
-min_lr: 1e-7
-warmup_iters: 500
+min_lr: 1.0e-7
+warmup_iters: 1000
 batch_size: 1
 seed: 20260915
 load_from: work_dirs/slarm/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu/checkpoints/ckpt_019999.pth
