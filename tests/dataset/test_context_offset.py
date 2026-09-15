@@ -553,3 +553,60 @@ def test_extrapolation_buckets_empty_out_as_the_window_slides(offset, empty):
     gone = [name for name, idx in buckets.items()
             if all(i >= len(targets) for i in idx)]
     assert gone == empty
+
+
+# ---------------------------------------------------------------------------
+# 零外推陷阱
+#
+# landing_index 取的是**存下来的最后一帧**（绝对帧 24）。窗口越往后滑，它离终端
+# 观测越近，到 offset 9 就重合了：
+#
+#   offset  targets  landing_idx  landing_frame  terminal  frame24 外推
+#      +0     25        24            24           15        0.300 s
+#      +3     22        21            24           18        0.200 s
+#      +6     19        18            24           21        0.100 s
+#      +9     16        15            24           24        0.000 s
+#
+# 零外推下 frame24_position 退化成"终端帧的位置误差"，数值比真的落点误差**小**，
+# 扫表的人会读成滑窗效果拔群。这比缺一个指标危险，所以那种情况下干脆不发。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("offset,horizon_frames", [(0, 9), (3, 6), (6, 3), (9, 0)])
+def test_frame24_horizon_shrinks_and_reaches_zero(offset, horizon_frames):
+    _, targets = shifted_contract(offset)
+    landing_index = min(_BASE_TARGETS[-1], len(targets) - 1)
+    terminal = targets[15]
+    assert targets[landing_index] == _BASE_TARGETS[-1], "landing is the last stored frame"
+    assert targets[landing_index] - terminal == horizon_frames
+
+
+def test_zero_horizon_suppresses_the_frame24_metrics():
+    """A flattering wrong number is worse than a missing one."""
+    source = _EVAL_SRC.read_text()
+    assert "frame24_errors = [] if dt <= 0 else" in source, (
+        "frame24_* must be skipped when the window leaves no extrapolation"
+    )
+
+
+def test_startup_prints_both_horizons():
+    """The operator should see the remaining horizon before the run, not after."""
+    source = _EVAL_SRC.read_text()
+    assert "frame24 horizon" in source and "catch horizon" in source
+
+
+@pytest.mark.parametrize("offset,seconds", [(0, 1.0), (3, 0.9), (6, 0.8), (9, 0.7)])
+def test_catch_horizon_stays_positive_and_shrinks_with_the_offset(offset, seconds):
+    """catch_position targets an absolute instant, so it stays well defined.
+
+    The per-frame step is timespan / (last target - first target) = 0.8 / 24,
+    so frame 15 to frame 45 is 1.000 s, which is what the report prints as
+    `catch horizon s`. Sliding the window is exactly what shortens it, and that
+    shortening is the point: the velocity error enters the landing multiplied
+    by this number.
+    """
+    catch_frame, span, timespan = 45, 24, 0.8
+    _, targets = shifted_contract(offset)
+    horizon = (catch_frame - targets[15]) * timespan / span
+    assert horizon > 0
+    assert abs(horizon - seconds) < 1e-9

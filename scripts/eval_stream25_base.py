@@ -1022,7 +1022,18 @@ def compute_stream25_scene_metrics(
         ).item()
         * timespan
     )
-    frame24_errors = compute_rendered_frame24_position_errors(
+    # ★ 零外推陷阱。landing_index 取的是**存下来的最后一帧**（绝对帧 24），窗口
+    #   越往后滑，它离终端观测越近：offset 0 还有 0.300 s，offset 9 是 0.000 s。
+    #   到那一步 frame24_position 就退化成"终端帧的位置误差"，数字会比真的落点
+    #   误差**小**，扫表的人会把它读成滑窗效果拔群。所以零外推时干脆不发这个
+    #   指标 —— 让 gate 报 MISSING，比给一个好看的错数安全。
+    #   catch_position 不受影响：它固定打在绝对时刻 stream25_catch_frame 上。
+    if dt <= 0:
+        print(f"[eval] frame24_* skipped: the window at offset +{context_offset} "
+              f"leaves no extrapolation to the last stored frame "
+              f"(landing index {landing_index} is the terminal observation). "
+              f"catch_position is unaffected.", flush=True)
+    frame24_errors = [] if dt <= 0 else compute_rendered_frame24_position_errors(
         pred_depth[15],
         pred_sem[15],
         pred_ms3[15],
@@ -1414,6 +1425,16 @@ def run_evaluation(
             f"{tuple(f + context_offset for f in STREAM25_CONTEXT_FRAMES)}, "
             f"terminal frame {terminal_frame}. frame24_* is NOT comparable to offset 0; "
             f"read catch_position instead.",
+            flush=True,
+        )
+        # 剩余外推 = 最后一个存下来的帧 - 终端观测。它随 offset 缩短，到 +9 归零。
+        span = STREAM25_ALL_TARGET_FRAMES[-1] - STREAM25_ALL_TARGET_FRAMES[0]
+        remaining = STREAM25_ALL_TARGET_FRAMES[-1] - terminal_frame
+        print(
+            f"[eval] frame24 horizon: {remaining} frames "
+            f"({remaining * float(args.timespan) / span:.3f} s); "
+            f"catch horizon: {catch_frame - terminal_frame} frames. "
+            + ("frame24_* will be skipped." if remaining <= 0 else ""),
             flush=True,
         )
         if not catch_frame:
