@@ -50,6 +50,13 @@ KEY_METRICS: List[Tuple[str, str, List[Tuple[str, str]], Optional[str]]] = [
     # "把观测窗口后移" 买到了多少必须看这两行。catch horizon 打印的是
     # (catch_frame - 终端帧) 的秒数，滑窗后它会变短 —— 那正是收益的来源。
     ("catch position med / p95",        "down", [("catch_position", "median"), ("catch_position", "p95")], None),
+    # 把落点误差按环轴拆开。环正对来球，轴向偏差只让球早到/晚到，不会打偏；
+    # 只有 inplane 决定球穿不穿得过环口。catch position 用的是 3D 模，把轴向
+    # 也算成了打偏，所以由它得出的成功率是**下界**，inplane 才是几何上诚实的。
+    #   inplane / catch 接近 1 -> 误差主要横向，现在这个成功率就差不多是对的
+    #   inplane / catch 明显 <1 -> 误差主要沿飞行方向，成功率被低估
+    ("catch position inplane med / p95", "down", [("catch_position_inplane", "median"), ("catch_position_inplane", "p95")], None),
+    ("catch position axial med",        "down", [("catch_position_axial", "median")], None),
     ("catch position balltoken",        "down", [("catch_position_balltoken", "median")], None),
     ("catch horizon s",                 "down", [("catch_horizon_s", "median")], None),
     ("pixel fit frame24 med / p95",     "down", [("frame24_position_fit", "median"), ("frame24_position_fit", "p95")], None),

@@ -22,11 +22,17 @@ It counts scenes whose predicted landing sits within the aperture of a ring
 centred on the true landing. That is a necessary condition for a catch and a
 useful single number, but it is not the robot's success rate:
 
-  - It uses the 3D distance, while only the component IN the ring plane
-    decides whether the ball clears the opening. Error along the ring axis
-    arrives as early or late rather than wide, so the true geometric rate is
-    HIGHER than this. The reports store the error norm, not its vector, so the
-    split cannot be recovered here.
+  - By default it uses the 3D distance, while only the component IN the ring
+    plane decides whether the ball clears the opening. Error along the ring
+    axis arrives as early or late rather than wide, so the 3D rate is a LOWER
+    bound. Reports produced after the decomposition landed also carry
+    catch_position_inplane, which is the geometrically honest number:
+
+        python tools/catch_success_rate.py report.json \
+          --metric catch_position_inplane
+
+    Older reports have only the norm, and the split cannot be recovered from
+    it, so they have to be re-evaluated to get the better number.
   - It assumes the ring is placed exactly at the true landing point. A real
     arm also has to get there, with its own reach, timing and control error.
 

@@ -103,6 +103,8 @@ BALL_TOKEN_METRIC_NAMES = (
     # 接球帧落点。★ 唯一跨 context offset 可比的落点指标：frame24_* 的外推时长
     # 随窗口滑动而变，catch_* 固定打在绝对时刻 stream25_catch_frame 上。
     "catch_position",
+    "catch_position_inplane",
+    "catch_position_axial",
     "catch_position_balltoken",
     "catch_horizon_s",
 )
@@ -558,11 +560,39 @@ def compute_rendered_frame24_position_errors(
     stream25_metrics.apply_ball_surface_offset）。它会改变 frame24_position 的
     定义，所以必须显式打开，不能默认生效 —— 否则和历史数字不可比。
     """
+    predicted = rendered_landing_positions_per_view(
+        depth15, semantic15, ms3_15, ray_origins15, ray_directions15,
+        canonical_to_rig, dt=dt, ball_surface_offset=ball_surface_offset,
+    )
+    return [
+        float("nan") if p is None else float((p - gt_pos24).norm().item())
+        for p in predicted
+    ]
+
+
+def rendered_landing_positions_per_view(
+    depth15: torch.Tensor,
+    semantic15: torch.Tensor,
+    ms3_15: torch.Tensor,
+    ray_origins15: torch.Tensor,
+    ray_directions15: torch.Tensor,
+    canonical_to_rig: torch.Tensor,
+    *,
+    dt: float,
+    ball_surface_offset: float = 0.0,
+) -> List[Optional[torch.Tensor]]:
+    """Predicted landing position per named view, or None where no ball rendered.
+
+    The landing ERROR is what the gates read, but a norm cannot be split into
+    the part that makes the ball miss the ring and the part that only makes it
+    arrive early. Returning the position keeps that decomposition available to
+    the caller without changing how the error is computed.
+    """
     positions15 = ray_origins15 + ray_directions15 * depth15[..., None]
     positions15 = apply_ball_surface_offset(
         positions15, ray_directions15, ball_surface_offset
     )
-    errors = []
+    out: List[Optional[torch.Tensor]] = []
     for eye in range(depth15.shape[0]):
         mask = (
             (semantic15[eye] == 1)
@@ -572,7 +602,7 @@ def compute_rendered_frame24_position_errors(
             & torch.isfinite(positions15[eye]).all(dim=-1)
         )
         if not mask.any():
-            errors.append(float("nan"))
+            out.append(None)
             continue
         pos = transform_position(
             positions15[eye][mask].median(dim=0).values,
@@ -587,9 +617,8 @@ def compute_rendered_frame24_position_errors(
             )
             for offset in (0, 3, 6)
         ]
-        pred_pos24 = integrate_frame24_position(pos, *parts, dt)
-        errors.append(float((pred_pos24 - gt_pos24).norm().item()))
-    return errors
+        out.append(integrate_frame24_position(pos, *parts, dt))
+    return out
 
 
 def compute_rendered_frame24_position_error(
@@ -1107,15 +1136,50 @@ def compute_stream25_scene_metrics(
             catch_dt, gravity,
         )
         catch_metrics["catch_horizon_s"] = catch_dt
-        worst = compute_rendered_frame24_position_error(
+        predicted = rendered_landing_positions_per_view(
             pred_depth[15], pred_sem[15], pred_ms3[15],
             target_ray_origins[0, 15].float().cpu(),
             target_ray_directions[0, 15].float().cpu(),
-            canonical_to_rig, gt_catch, dt=catch_dt,
+            canonical_to_rig, dt=catch_dt,
             ball_surface_offset=ball_surface_offset,
         )
-        if math.isfinite(worst):
-            catch_metrics["catch_position"] = worst
+        finite = [p for p in predicted if p is not None and torch.isfinite(p).all()]
+        if finite:
+            catch_metrics["catch_position"] = max(
+                float((p - gt_catch).norm().item()) for p in finite
+            )
+
+        # ---- the component that actually decides whether the ball goes in ----
+        #
+        # The ring is placed at the predicted point and waits, and it faces the
+        # incoming ball, so its axis is the ball's velocity at the catch. Split
+        # the error against that axis:
+        #
+        #   along  the axis  -> the true trajectory still passes through the ring
+        #                       centre, just early or late. Not a miss.
+        #   across the axis  -> the ball crosses the ring plane off-centre by
+        #                       this much. This is the miss.
+        #
+        # catch_position uses the full 3D norm and therefore counts axial error
+        # as if it were lateral, which makes any success rate read off it a
+        # LOWER bound. catch_position_inplane is the geometrically honest one.
+        # Their ratio also says which way the error points, which is checkable
+        # against the error budget's claim that it is mostly along the view ray.
+        #
+        # Gravity is known and the flight is ballistic, so the catch-time
+        # velocity comes from the terminal one without another prediction.
+        velocity_catch = _gt_v_all[0, TERMINAL_TARGET_INDEX].float().cpu() + gravity * catch_dt
+        speed = float(velocity_catch.norm().item())
+        if finite and math.isfinite(speed) and speed > 1e-6:
+            axis = velocity_catch / speed
+            lateral, axial = [], []
+            for p in finite:
+                error = p - gt_catch
+                along = float((error * axis).sum().item())
+                axial.append(abs(along))
+                lateral.append(float((error - along * axis).norm().item()))
+            catch_metrics["catch_position_inplane"] = max(lateral)
+            catch_metrics["catch_position_axial"] = max(axial)
         _bt_p, _bt_v = predictions.get("ball_pos15"), predictions.get("ball_v15")
         if _bt_p is not None and _bt_v is not None:
             _p = _bt_p.reshape(-1)[:3].float().cpu()
