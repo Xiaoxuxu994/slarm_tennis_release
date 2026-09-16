@@ -1,0 +1,285 @@
+#!/usr/bin/env python
+"""Per-scene ball trajectory: where the model puts the ball, frame by frame.
+
+The rendered video cannot answer this. The ball is 2.66 px across in a
+320x240 frame, seven thousandths of one percent of the image, so at full frame
+it is a smudge whether the geometry is right or wrong. This reads the same
+quantity the evaluator scores -- the median of the back-projected ball pixels,
+per view, per frame -- and writes it out as a track that can be plotted.
+
+It runs the single forward that render uses, not the six-step StreamSession, so
+it can be asked for frames past 24 and show where the ball is predicted to be
+at the catch. Truth is the stored trajectory up to the last exported frame and
+the analytic ballistic continuation beyond it, marked as such in the output.
+
+    python tools/export_ball_track.py \\
+        --config configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml \\
+        --checkpoint work_dirs/.../ckpt_013999.pth \\
+        --scene 0 --num-frames 46 --output ball_track
+
+Writes <output>.csv (one row per frame and view) and <output>.html (a plot of
+the three axes and of the error, openable in a browser).
+
+Two things worth looking for in the plot:
+  - Does the error DRIFT smoothly across frames, or scatter about zero? A
+    smooth drift is indistinguishable from velocity to a ballistic fit, and is
+    the known reason the fitted velocity sits over twice its noise floor.
+  - Do the three views agree with each other while all disagreeing with truth?
+    That is a common-mode error, which averaging over views cannot remove.
+
+All output is ASCII.
+"""
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import torch
+
+from src.dataset.stream25 import MS3_GRAVITY_RIG
+from src.utils.stream25_metrics import transform_position
+
+
+def ball_positions(depth, semantic, origins, directions, canonical_to_rig) -> List[Optional[List[float]]]:
+    """Median of the back-projected ball pixels, per view. None where no ball."""
+    points = origins + directions * depth[..., None]
+    out: List[Optional[List[float]]] = []
+    for eye in range(depth.shape[0]):
+        mask = (
+            (semantic[eye] == 1)
+            & torch.isfinite(depth[eye])
+            & (depth[eye] > 0)
+            & torch.isfinite(points[eye]).all(dim=-1)
+        )
+        if not mask.any():
+            out.append(None)
+            continue
+        centre = transform_position(points[eye][mask].median(dim=0).values, canonical_to_rig)
+        out.append([float(x) for x in centre])
+    return out
+
+
+def svg_plot(rows: List[Dict[str, Any]], frames: List[int], axis: int, name: str,
+             views: List[str]) -> str:
+    """One axis of the track: truth as a line, each view's reading as dots."""
+    width, height, pad = 620, 190, 44
+    truth = [(f, r["gt"][axis]) for f, r in zip(frames, rows) if r["gt"] is not None]
+    readings = [(f, r["views"][i][axis])
+                for f, r in zip(frames, rows)
+                for i in range(len(views)) if r["views"][i] is not None]
+    if not truth and not readings:
+        return ""
+    values = [v for _, v in truth] + [v for _, v in readings]
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    lo, hi = lo - 0.08 * span, hi + 0.08 * span
+
+    def sx(f: int) -> float:
+        return pad + (f - frames[0]) / max(1, frames[-1] - frames[0]) * (width - pad - 14)
+
+    def sy(v: float) -> float:
+        return height - pad + 14 - (v - lo) / (hi - lo) * (height - pad - 14)
+
+    colours = ["#2E6389", "#B33D33", "#2B7A56"]
+    parts = [f'<svg viewBox="0 0 {width} {height}" class="plot">']
+    parts.append(f'<line x1="{pad}" y1="{height-pad+14:.1f}" x2="{width-14}" y2="{height-pad+14:.1f}" '
+                 f'stroke="var(--rule)" stroke-width="1"/>')
+    parts.append(f'<text x="{pad}" y="16" class="t lab">{name}</text>')
+    parts.append(f'<text x="{width-14}" y="16" class="t dim" text-anchor="end">'
+                 f'{lo:.2f} .. {hi:.2f} m</text>')
+    if truth:
+        d = " ".join(f"{'M' if i == 0 else 'L'} {sx(f):.1f} {sy(v):.1f}"
+                     for i, (f, v) in enumerate(truth))
+        parts.append(f'<path d="{d}" fill="none" stroke="var(--ink)" stroke-width="2"/>')
+    for i, view in enumerate(views):
+        for f, r in zip(frames, rows):
+            if r["views"][i] is None:
+                continue
+            parts.append(f'<circle cx="{sx(f):.1f}" cy="{sy(r["views"][i][axis]):.1f}" r="2.6" '
+                         f'fill="{colours[i % len(colours)]}" fill-opacity="0.85"/>')
+    parts.append(f'<text x="{pad}" y="{height-6}" class="t dim">frame {frames[0]}</text>')
+    parts.append(f'<text x="{width-14}" y="{height-6}" class="t dim" text-anchor="end">'
+                 f'frame {frames[-1]}</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def write_html(path: Path, rows, frames, views, scene, checkpoint, last_stored) -> None:
+    colours = ["#2E6389", "#B33D33", "#2B7A56"]
+    legend = " ".join(
+        f'<span class="key"><i style="background:{colours[i % len(colours)]}"></i>{v}</span>'
+        for i, v in enumerate(views)
+    )
+    plots = "".join(svg_plot(rows, frames, a, n, views)
+                    for a, n in enumerate(("x (m)", "y (m)", "z (m)")))
+    errors = [(f, max((r["err"][i] for i in range(len(views)) if r["err"][i] is not None),
+                      default=None))
+              for f, r in zip(frames, rows)]
+    err_rows = "".join(
+        f"<tr><td>{f}</td><td>{'n/a' if e is None else f'{e*100:.2f}'}</td>"
+        f"<td>{'stored' if f <= last_stored else 'continued'}</td></tr>"
+        for f, e in errors)
+    path.write_text(f"""<!doctype html><meta charset="utf-8">
+<title>Ball track scene {scene}</title>
+<style>
+ :root {{ --paper:#F4F6F3; --panel:#fff; --ink:#171A18; --muted:#6E756F; --rule:#DCE1DA; }}
+ @media (prefers-color-scheme: dark) {{ :root {{
+   --paper:#131614; --panel:#1B1F1C; --ink:#E9ECE7; --muted:#99A29B; --rule:#2C322D; }} }}
+ body {{ background:var(--paper); color:var(--ink); margin:0; padding:28px 20px 48px;
+   font:14px/1.7 system-ui,sans-serif; }}
+ .wrap {{ max-width:700px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }}
+ h1 {{ font-size:20px; margin:0; }} p {{ margin:0; color:var(--muted); }}
+ .plot {{ display:block; width:100%; height:auto; background:var(--panel);
+   border:1px solid var(--rule); }}
+ .t {{ font:11px ui-monospace,monospace; }} .lab {{ fill:var(--ink); font-weight:600; }}
+ .dim {{ fill:var(--muted); }}
+ .key {{ display:inline-flex; align-items:center; gap:6px; margin-right:14px;
+   font:12px ui-monospace,monospace; color:var(--muted); }}
+ .key i {{ width:10px; height:10px; border-radius:50%; display:inline-block; }}
+ table {{ border-collapse:collapse; font:12px ui-monospace,monospace; }}
+ td, th {{ padding:3px 12px; border-bottom:1px solid var(--rule); text-align:right; }}
+ th:last-child, td:last-child {{ text-align:left; }}
+ .scroll {{ max-height:340px; overflow:auto; background:var(--panel);
+   border:1px solid var(--rule); }}
+</style>
+<div class="wrap">
+<h1>Ball track &mdash; scene {scene}</h1>
+<p>{checkpoint}<br>Black line is truth; dots are each view's reading.
+Truth is stored through frame {last_stored} and ballistically continued after it.</p>
+<div>{legend}<span class="key"><i style="background:var(--ink)"></i>truth</span></div>
+{plots}
+<h1 style="font-size:16px">Worst-view error per frame (cm)</h1>
+<div class="scroll"><table><thead><tr><th>frame</th><th>error</th><th>truth</th></tr></thead>
+<tbody>{err_rows}</tbody></table></div>
+</div>
+""", encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--scene", type=int, default=0, help="index into the eval manifest")
+    parser.add_argument("--num-frames", type=int, default=46,
+                        help="render this many frames; past the stored ones the model "
+                             "is extrapolating and truth is continued analytically")
+    parser.add_argument("--output", type=Path, default=Path("ball_track"))
+    cli = parser.parse_args()
+
+    from scripts.render_stream25_base import configure_reconstruction_timeline
+    from src.dataset.data_utils import to_batch_tensor, prepare_inputs_and_targets
+    from src.utils.stream25_metrics import set_camera_order
+    from src.utils.misc import camera_names_from_arguments
+    from tools.stream25_runtime import (
+        build_stream25_dataset, build_stream25_model, load_stream25_args,
+    )
+
+    args = load_stream25_args(cli.config, checkpoint_path=cli.checkpoint,
+                              checkpoint_role="evaluation")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = build_stream25_dataset(args, "validation", online_feat=False)
+    if not 0 <= cli.scene < len(dataset):
+        parser.error(f"--scene must be in [0, {len(dataset)})")
+    model = build_stream25_model(args, device)
+    model.eval()
+
+    sample = dataset[cli.scene]
+    scene_name = sample.get("scene_name", str(cli.scene))
+
+    batch = to_batch_tensor(sample)
+    batch["num_max_cams"] = int(batch["num_max_cams"][0]) if not isinstance(
+        batch["num_max_cams"], int) else batch["num_max_cams"]
+    input_dict, target_dict = prepare_inputs_and_targets(
+        batch, device, v=batch["num_max_cams"], timespan=args.timespan, feat_extractor=None)
+    stored = int(target_dict["target_image"].shape[1])
+    input_dict = configure_reconstruction_timeline(input_dict, num_frames=cli.num_frames)
+
+    with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        prediction = model(input_dict)
+
+    render = prediction["render_results"]
+    depth = render["rendered_depth"][0].float().cpu()
+    semantic = prediction["rendered_task_semantic"][0].long().cpu()
+    rays = model.plucker_embedder(input_dict["target_intrinsics"], input_dict["target_camtoworlds"],
+                                  image_size=depth.shape[-2:])
+    origins = rays["origins"][0].float().cpu()
+    directions = rays["dirs"][0].float().cpu()
+    canonical_to_rig = input_dict["context_canonical_to_rig"][0, -1].float().cpu()
+
+    truth_all = target_dict.get("ball_position_rig")
+    velocity_all = target_dict.get("ball_velocity_rig")
+    if truth_all is None or velocity_all is None:
+        parser.error("this dataset has no ball_position_rig / ball_velocity_rig")
+    truth_all = truth_all[0].float().cpu()
+    gravity = torch.tensor(MS3_GRAVITY_RIG, dtype=torch.float32)
+    step = float(args.timespan) / 24.0
+    last = min(stored, truth_all.shape[0]) - 1
+    tail_p = truth_all[last]
+    tail_v = velocity_all[0, last].float().cpu()
+
+    # Real camera names, so a column in the CSV can be matched against the
+    # per-view rows of an evaluation report without counting positions.
+    view_names = list(set_camera_order(
+        camera_names_from_arguments(args, role="evaluation")
+    ))[: depth.shape[1]]
+    while len(view_names) < depth.shape[1]:
+        view_names.append(f"view{len(view_names)}")
+    frames = list(range(min(cli.num_frames, depth.shape[0])))
+    rows: List[Dict[str, Any]] = []
+    for frame in frames:
+        per_view = ball_positions(depth[frame], semantic[frame], origins[frame],
+                                  directions[frame], canonical_to_rig)
+        if frame <= last:
+            gt = [float(x) for x in truth_all[frame]]
+        else:
+            dt = (frame - last) * step
+            gt = [float(x) for x in (tail_p + tail_v * dt + 0.5 * gravity * dt * dt)]
+        errors = [None if p is None else math.dist(p, gt) for p in per_view]
+        rows.append({"views": per_view, "gt": gt, "err": errors})
+
+    csv_path = cli.output.with_suffix(".csv")
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w") as handle:
+        handle.write("frame,view,pred_x,pred_y,pred_z,gt_x,gt_y,gt_z,error_m,truth_source\n")
+        for frame, row in zip(frames, rows):
+            source = "stored" if frame <= last else "continued"
+            for i, name in enumerate(view_names):
+                p = row["views"][i]
+                cells = ",".join("" if p is None else f"{x:.6f}" for x in (p or [0, 0, 0]))
+                err = "" if row["err"][i] is None else f"{row['err'][i]:.6f}"
+                handle.write(f"{frame},{name},{cells},"
+                             f"{row['gt'][0]:.6f},{row['gt'][1]:.6f},{row['gt'][2]:.6f},"
+                             f"{err},{source}\n")
+
+    html_path = cli.output.with_suffix(".html")
+    write_html(html_path, rows, frames, view_names, scene_name,
+               Path(cli.checkpoint).name, last)
+
+    finite = [e for row in rows for e in row["err"] if e is not None]
+    missing = sum(1 for row in rows for e in row["err"] if e is None)
+    print(f"scene        : {scene_name} (index {cli.scene})")
+    print(f"frames       : {frames[0]}..{frames[-1]}  "
+          f"(truth stored through {last}, continued after)")
+    print(f"ball found   : {len(finite)} of {len(frames) * len(view_names)} view-frames"
+          + (f", missing in {missing}" if missing else ""))
+    if finite:
+        print(f"error        : median {sorted(finite)[len(finite)//2]*100:.2f} cm, "
+              f"max {max(finite)*100:.2f} cm")
+    print(f"wrote        : {csv_path}")
+    print(f"               {html_path}")
+    print("")
+    print("In the plot: a smoothly DRIFTING error is indistinguishable from velocity")
+    print("to a ballistic fit, and is the known reason the fitted velocity sits over")
+    print("twice its noise floor. Scatter about zero is harmless by comparison.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
