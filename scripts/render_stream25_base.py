@@ -76,6 +76,42 @@ def configure_reconstruction_timeline(input_dict, num_frames):
     return configured
 
 
+#: The ball is 2.66 px across in a 320x240 frame -- seven thousandths of one
+#: percent of it. At full frame it is a smudge whether the geometry is right or
+#: wrong, so every video of this scene shows the room and hides the subject.
+#: These crop a window around it and blow it up with nearest-neighbour, which
+#: keeps the pixel grid visible; smoothing here would invent detail that the
+#: 2.66 px never had.
+BALL_ZOOM_CROP_W = 32
+BALL_ZOOM_CROP_H = 24
+
+
+def ball_centre_px(semantic, fallback=None):
+    """Centroid of the ball label, or the fallback when the ball is not there."""
+    ys, xs = np.nonzero(semantic == 1)
+    if len(xs) == 0:
+        return fallback
+    return (float(xs.mean()), float(ys.mean()))
+
+
+def ball_zoom(image, centre, out_w, out_h):
+    """Crop a fixed window about `centre` and scale it to the panel size."""
+    import cv2
+    h, w = image.shape[:2]
+    if centre is None:
+        centre = (w / 2.0, h / 2.0)
+    half_w, half_h = BALL_ZOOM_CROP_W // 2, BALL_ZOOM_CROP_H // 2
+    # Clamp the window inside the image so the magnification never changes;
+    # a window that shrank at the edges would make the ball look like it
+    # changed size when it only moved.
+    x0 = int(round(min(max(centre[0] - half_w, 0), max(0, w - BALL_ZOOM_CROP_W))))
+    y0 = int(round(min(max(centre[1] - half_h, 0), max(0, h - BALL_ZOOM_CROP_H))))
+    crop = image[y0:y0 + BALL_ZOOM_CROP_H, x0:x0 + BALL_ZOOM_CROP_W]
+    if crop.size == 0:
+        return np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    return cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+
+
 def make_label(text, w=320, h=20):
     import cv2
     img = np.zeros((h, w, 3), dtype=np.uint8)
@@ -235,6 +271,11 @@ def main():
     dtype = torch.bfloat16
 
     for sid in scene_ids:
+        if args.save_gaussian:
+            from pathlib import Path
+            ply_directory = Path(args.gaussian_save_path) / f"scene_{sid:04d}"
+            if ply_directory.exists():
+                raise FileExistsError(f"Refusing to overwrite Gaussian sequence: {ply_directory}")
         print(f"Rendering scene {sid}...", flush=True)
         sample = dataset[sid]
         data_dict = to_batch_tensor(sample)
@@ -253,7 +294,80 @@ def main():
         scene_fps = _scalar_float(input_dict["fps"], "fps")
 
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
-            pred_dict = model(input_dict)
+            pred_dict = model(input_dict, stream_save=not args.save_gaussian)
+
+        if args.save_gaussian:
+            from tools.export_gaussian_sequence import export_gaussian_sequence
+            from src.utils.stream25_metrics import transform_position
+            # One class label per Gaussian. The Gaussians are one per context
+            # pixel in (t v h w) order, which is exactly the layout of
+            # context_task_semantic, so no resampling is involved.
+            ball_semantic = None
+            context_semantic = input_dict.get("context_task_semantic")
+            if context_semantic is not None:
+                ball_semantic = context_semantic.reshape(-1).long()
+
+            # Mark the predicted and the true ball centre so the error reads as
+            # a distance in space. Both have to be in the Gaussians' frame,
+            # which is canonical, while the stored truth lives in the rig.
+            ply_markers = {}
+            truth_rig = target_dict.get("ball_position_rig")
+            if truth_rig is not None:
+                canonical_to_rig = input_dict["context_canonical_to_rig"][0, -1].float().cpu()
+                rig_to_canonical = torch.linalg.inv(canonical_to_rig)
+                render_depth = pred_dict["render_results"]["rendered_depth"][0].float().cpu()
+                render_sem = pred_dict["rendered_task_semantic"][0].long().cpu()
+                plucker = model.plucker_embedder(
+                    input_dict["target_intrinsics"], input_dict["target_camtoworlds"],
+                    image_size=render_depth.shape[-2:])
+                ray_o = plucker["origins"][0].float().cpu()
+                ray_d = plucker["dirs"][0].float().cpu()
+                stored_frames = int(truth_rig.shape[1])
+                # export_gaussian_sequence keys markers by FRAME NUMBER, which is
+                # what its file names use; the loop below runs over target list
+                # POSITIONS. They coincide under configure_reconstruction_timeline
+                # and would silently stop coinciding if that ever changed.
+                from src.utils.frame_indices import normalize_frame_indices
+                marker_frames = normalize_frame_indices(
+                    input_dict["target_frame_idx"], batch_size=1,
+                    num_timesteps=render_depth.shape[0],
+                    num_views=input_dict["target_camtoworlds"].shape[2],
+                    name="target_frame_idx")[0].tolist()
+                for index in range(render_depth.shape[0]):
+                    entries = []
+                    if index < stored_frames:
+                        entries.append((
+                            [float(x) for x in transform_position(
+                                truth_rig[0, index].float().cpu(), rig_to_canonical)],
+                            (0.15, 0.85, 0.35),        # truth: green
+                        ))
+                    points = ray_o[index] + ray_d[index] * render_depth[index][..., None]
+                    picked = []
+                    for eye in range(render_depth.shape[1]):
+                        mask = ((render_sem[index, eye] == 1)
+                                & torch.isfinite(render_depth[index, eye])
+                                & (render_depth[index, eye] > 0)
+                                & torch.isfinite(points[eye]).all(dim=-1))
+                        if mask.any():
+                            picked.append(points[eye][mask].median(dim=0).values)
+                    if picked:
+                        entries.append((
+                            [float(x) for x in torch.stack(picked).mean(dim=0)],
+                            (0.95, 0.25, 0.20),        # prediction: red
+                        ))
+                    if entries:
+                        ply_markers[int(marker_frames[index])] = entries
+
+            paths = export_gaussian_sequence(
+                input_dict, pred_dict["render_results"], ply_directory,
+                affine=pred_dict["gs_params"].get("affine"),
+                semantic=ball_semantic, markers=ply_markers,
+                marker_radius=float(getattr(args, "stream25_ball_radius", 0.0325) or 0.0325))
+            print(f"Exported {len(paths)} PLY files to {ply_directory}", flush=True)
+            print(f"  gs_<frame>.ply    full scene, ball coloured by semantic", flush=True)
+            print(f"  ball_<frame>.ply  ball Gaussians only, about a hundred points",
+                  flush=True)
+            print(f"  green shell = true ball centre, red shell = predicted", flush=True)
 
         render_results = pred_dict.get("render_results", {})
         rendered_rgb = render_results.get("rendered_image")
@@ -350,6 +464,45 @@ def main():
             gt_full = np.concatenate(gt_row, axis=1)
             pred_full = np.concatenate(pred_row, axis=1)
 
+            # Zoom row. Mirrors the modality layout above so the widths match:
+            # each view gets three panels, GT / predicted RGB / predicted
+            # semantic, all cropped about the ball and magnified 10x.
+            zoom_row = []
+            for cam_idx in range(v):
+                pred_s = None
+                if rendered_semantic is not None:
+                    pred_s = rendered_semantic[0, frame_idx, cam_idx].cpu().numpy()
+                    if pred_s.ndim == 3:
+                        pred_s = pred_s.argmax(0)
+                # Centre on the truth where there is one, so a prediction that
+                # lost the ball shows as an empty window rather than following
+                # its own mistake off screen.
+                centre = None
+                if gt_available:
+                    centre = ball_centre_px(
+                        gt_semantic[0, frame_idx, cam_idx].cpu().numpy())
+                if centre is None and pred_s is not None:
+                    centre = ball_centre_px(pred_s)
+                gt_img_f = (np.clip(gt_rgb[0, frame_idx, cam_idx].cpu().float()
+                                    .permute(1, 2, 0).numpy(), 0, 1) * 255).astype(np.uint8) \
+                    if gt_available else np.zeros((h, w, 3), dtype=np.uint8)
+                pred_img_f = (np.clip(rendered_rgb[0, frame_idx, cam_idx].cpu().float()
+                                      .numpy(), 0, 1) * 255).astype(np.uint8)
+                pred_sem_f = (semantic_to_color(pred_s) if pred_s is not None
+                              else np.zeros((h, w, 3), dtype=np.uint8))
+                zoom_row.append(np.concatenate([
+                    ball_zoom(gt_img_f, centre, w, h),
+                    ball_zoom(pred_img_f, centre, w, h),
+                    ball_zoom(pred_sem_f, centre, w, h),
+                ], axis=1))
+            zoom_full = np.concatenate(zoom_row, axis=1)
+            zoom_label = make_label(
+                f"Ball zoom {BALL_ZOOM_CROP_W}x{BALL_ZOOM_CROP_H} px at "
+                f"{w // BALL_ZOOM_CROP_W}x, nearest neighbour, centred on the "
+                f"{'GT' if gt_available else 'predicted'} ball:  "
+                f"GT RGB | Pred RGB | Pred semantic",
+                w=zoom_full.shape[1], h=18)
+
             col_label_w = gt_full.shape[1] // 2
             gt_column_label = (
                 "GT: RGB | Depth | Semantic"
@@ -364,7 +517,8 @@ def main():
                 w=col_label_w, h=18)
             col_labels = np.concatenate([col_labels_l, col_labels_r], axis=1)
 
-            frame = np.concatenate([label, col_labels, gt_full, pred_full], axis=0)
+            frame = np.concatenate([label, col_labels, gt_full, pred_full,
+                                    zoom_label, zoom_full], axis=0)
             frames.append(frame)
 
         out_path = os.path.join(extra.output_dir, f"scene_0{sid:03d}.mp4")
