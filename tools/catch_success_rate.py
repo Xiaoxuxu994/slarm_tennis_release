@@ -153,8 +153,8 @@ def main() -> int:
 
     label_width = max(28, max(len(p.parent.name) for p in paths) + 2)
     print(f"{'report':<{label_width}}{'n':>5}{'success':>10}{'95% CI':>16}"
-          f"{'median':>9}{'p95':>9}")
-    print("-" * (label_width + 49))
+          f"{'median':>9}{'p90':>9}{'p95':>9}")
+    print("-" * (label_width + 58))
 
     for path in paths:
         with path.open() as handle:
@@ -167,9 +167,10 @@ def main() -> int:
             continue
         hits = sum(1 for v in values if v < tolerance)
         low, high = wilson(hits, len(values))
-        med, p95 = percentile(values, 50), percentile(values, 95)
+        med = percentile(values, 50)
+        p90, p95 = percentile(values, 90), percentile(values, 95)
         print(f"{label:<{label_width}}{len(values):>5}{hits / len(values):>9.1%}"
-              f"{f'[{low:.1%}, {high:.1%}]':>16}{med:>9.4f}{p95:>9.4f}")
+              f"{f'[{low:.1%}, {high:.1%}]':>16}{med:>9.4f}{p90:>9.4f}{p95:>9.4f}")
 
     print("")
     print("Sensitivity: the same scenes scored against the other two criteria,")

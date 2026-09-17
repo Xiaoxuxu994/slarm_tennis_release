@@ -93,6 +93,26 @@ def summary(report: Dict[str, Any], metric: str, sub: str) -> Optional[float]:
     return value if math.isfinite(value) else None
 
 
+def percentile(values: List[float], q: float) -> Optional[float]:
+    """Linear-interpolated percentile, matching the evaluator's finite_percentile.
+
+    Computed from per_scene rather than read off the report's own aggregate, so
+    that median, p90 and p95 all come from one place. The report only ever
+    aggregates 50 and 95, and p90 is the one a reader asks for next: p95 at two
+    hundred scenes sits on the tenth worst case and moves a lot between runs,
+    while p90 rests on twenty and is far steadier.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * q / 100.0
+    low = int(math.floor(position))
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
 def wilson(hits: int, total: int, z: float = 1.96) -> Tuple[float, float]:
     if total == 0:
         return (0.0, 0.0)
@@ -129,7 +149,13 @@ def main() -> int:
     for path in find_reports(cli.reports):
         with path.open() as handle:
             report = json.load(handle)
+        landing = scene_values(report, "catch_position")
+        inplane = scene_values(report, "catch_position_inplane")
+        frame24 = scene_values(report, "frame24_position")
         rows.append({
+            "f24": {q: percentile(frame24, q) for q in (50, 90, 95)},
+            "catch": {q: percentile(landing, q) for q in (50, 90, 95)},
+            "ip": {q: percentile(inplane, q) for q in (50, 90, 95)},
             "label": path.parent.name or path.stem,
             "scenes": report.get("scene_count"),
             "split": report.get("split"),
@@ -179,15 +205,30 @@ def main() -> int:
     print("")
 
     width = max(22, max(len(row["label"]) for row in rows) + 2)
-    header = (f"{'model':<{width}}{'frame24':>10}{'p95':>9}{'catch':>10}{'p95':>9}"
-              f"{'success 3D':>13}{'95% CI':>15}{'in-plane':>11}{'95% CI':>15}")
+
+    print("Landing error, metres")
+    header = (f"{'model':<{width}}"
+              f"{'frame24 med':>13}{'p90':>9}{'p95':>9}"
+              f"{'catch med':>12}{'p90':>9}{'p95':>9}"
+              f"{'in-plane med':>15}{'p90':>9}{'p95':>9}")
     print(header)
     print("-" * len(header))
     for row in rows:
-        print(f"{row['label']:<{width}}{metres(row['f24_med']):>10}{metres(row['f24_p95']):>9}"
-              f"{metres(row['catch_med']):>10}{metres(row['catch_p95']):>9}"
-              f"{percent(row['rate3d']):>13}{interval(row['rate3d']):>15}"
-              f"{percent(row['rate_ip']):>11}{interval(row['rate_ip']):>15}")
+        cells = "".join(metres(row[group][q]).rjust(w)
+                        for group, first in (("f24", 13), ("catch", 12), ("ip", 15))
+                        for q, w in ((50, first), (90, 9), (95, 9)))
+        print(f"{row['label']:<{width}}{cells}")
+    print("")
+
+    print(f"Catch success, ball centre within {tolerance:.4f} m")
+    header = (f"{'model':<{width}}{'3D':>10}{'95% CI':>17}"
+              f"{'in-plane':>12}{'95% CI':>17}{'scenes':>9}")
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        scored = row["rate3d"][3] if row["rate3d"] else 0
+        print(f"{row['label']:<{width}}{percent(row['rate3d']):>10}{interval(row['rate3d']):>17}"
+              f"{percent(row['rate_ip']):>12}{interval(row['rate_ip']):>17}{scored:>9}")
     print("")
 
     print("Where the landing error comes from. It is dominated by velocity:")
@@ -232,11 +273,11 @@ def main() -> int:
         print("Markdown")
         print("=" * 96)
         print("")
-        print("| model | frame24 med | catch med | catch p95 | success (3D) | 95% CI |")
+        print("| model | catch med | catch p90 | catch p95 | success (3D) | 95% CI |")
         print("| --- | ---: | ---: | ---: | ---: | ---: |")
         for row in rows:
-            print(f"| {row['label']} | {metres(row['f24_med'])} | {metres(row['catch_med'])} "
-                  f"| {metres(row['catch_p95'])} | {percent(row['rate3d'])} | {interval(row['rate3d'])} |")
+            print(f"| {row['label']} | {metres(row['catch'][50])} | {metres(row['catch'][90])} "
+                  f"| {metres(row['catch'][95])} | {percent(row['rate3d'])} | {interval(row['rate3d'])} |")
         print("")
         print("| model | velocity (m/s) | position (m) | ball IoU anchor |")
         print("| --- | ---: | ---: | ---: |")
