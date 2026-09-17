@@ -13,8 +13,8 @@ set -euo pipefail
 #   代价是每个场景重新加载一次权重，几个场景无所谓。
 
 GPUS="0"
-CONFIG="configs/exp0910_004_balltoken_temporal_joint.yml"
-CKPT="work_dirs/slarm/exp0910_004_balltoken_temporal_joint/checkpoints/ckpt_003999.pth"
+CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
+CKPT="work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_019999.pth"
 
 # validation manifest 里的局部下标（不是全局 scene 编号）。
 SCENE_IDS="0"

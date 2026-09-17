@@ -5,7 +5,7 @@ set -euo pipefail
 # 切换实验 / 权重时不会互相覆盖。
 
 GPUS="0"
-CONFIG="configs/exp0910_004_balltoken_temporal_joint.yml"
+CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
 
 # CKPTS 可以是多个路径，也可以写通配符 —— 会按名字排序后逐个评测，
 # 每个 ckpt 有自己的输出目录（互不覆盖），最后自动打印一张跨 ckpt 的对照表。
@@ -17,7 +17,10 @@ CONFIG="configs/exp0910_004_balltoken_temporal_joint.yml"
 # 例：扫一整个实验的全部 ckpt
 #   CKPTS=("work_dirs/slarm/exp0910_004_balltoken_temporal_joint/checkpoints/ckpt_*.pth")
 CKPTS=(
-    "work_dirs/slarm/exp0910_004_balltoken_temporal_joint/checkpoints/ckpt_003999.pth"
+    # 通配符会展开成全部 ckpt，按名字排序逐个评测，最后自动出对照表。
+    # ★ 速度指标可能在训练中途见底后回升（exp0910_004 就是最早那个 ckpt 最好），
+    #   所以末点不一定是最优点，要横着看。
+    "work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_*.pth"
 )
 
 # 观测窗口的偏移量，跑几个就写几个。每个 offset 有独立的输出目录，不会互相覆盖。
