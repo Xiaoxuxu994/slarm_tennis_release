@@ -51,10 +51,25 @@ def test_the_box_is_much_larger_than_the_ball():
 def test_both_rows_get_a_box_from_their_own_source():
     """The GT row marks the recorded ball and the predicted row the rendered
     one. Drawing the GT box on both would hide the position error, which is the
-    one thing the two rows side by side are there to reveal."""
+    one thing the two rows side by side are there to reveal.
+
+    Checked by counting which centre each panel is boxed from, rather than by
+    matching one spelling of the call: the first version of this test named the
+    in-place loop and went red when that loop was replaced, without the
+    invariant it guards having changed.
+    """
     source = RENDER_SRC.read_text()
-    assert "draw_ball_box(panel, gt_centre)" in source
-    assert "draw_ball_box(panel, pred_centre)" in source
+    gt_panels = {"gt_img", "gt_dc", "gt_sc"}
+    pred_panels = {"pred_img", "pd_dc", "pd_sc"}
+    for panel in gt_panels:
+        assert f"{panel} = draw_ball_box({panel}, gt_centre)" in source
+    for panel in pred_panels:
+        assert f"{panel} = draw_ball_box({panel}, pred_centre)" in source
+    # And never the other way round, which is the failure that would look fine.
+    for panel in gt_panels:
+        assert f"draw_ball_box({panel}, pred_centre)" not in source
+    for panel in pred_panels:
+        assert f"draw_ball_box({panel}, gt_centre)" not in source
 
 
 def test_a_missing_ball_draws_nothing_rather_than_a_box_at_the_origin():
