@@ -20,6 +20,8 @@ the analytic ballistic continuation beyond it, marked as such in the output.
 Writes three files:
   <output>.csv     one row per frame and view
   <output>.html    the three axes and the error, openable in a browser
+  <output>.json    scene metadata, so tools/animate_ball_forecast.py can build
+                   the animation from the CSV without a GPU or a checkpoint
   <output>_3d.png  the trajectory in space, truth against prediction, with the
                    catch ring drawn where the ball is supposed to arrive
 
@@ -386,6 +388,25 @@ def main() -> int:
                Path(cli.checkpoint).name, last)
 
     ball_radius = float(getattr(args, "stream25_ball_radius", 0.0325) or 0.0325)
+    # Sidecar so the animation can be rebuilt from the CSV alone, on a machine
+    # with no GPU and no checkpoint. Guessing these from defaults would be one
+    # silently wrong number away from an animation that looks fine and is not.
+    import json as _json
+    meta_path = cli.output.with_suffix(".json")
+    meta_path.write_text(_json.dumps({
+        "scene": scene_name,
+        "scene_index": cli.scene,
+        "checkpoint": Path(cli.checkpoint).name,
+        "views": view_names,
+        "frames": frames,
+        "last_stored_frame": last,
+        "step_seconds": step,
+        "catch_frame": int(getattr(args, "stream25_catch_frame", 45) or 45),
+        "ball_radius_m": ball_radius,
+        "ring_diameter_m": cli.ring_diameter,
+        "gravity_rig": list(MS3_GRAVITY_RIG),
+    }, indent=2), encoding="utf-8")
+
     png_path = plot_3d(
         cli.output.parent / f"{cli.output.name}_3d.png", rows, frames, view_names,
         scene_name, Path(cli.checkpoint).name, last,
@@ -404,6 +425,7 @@ def main() -> int:
         print(f"error        : median {sorted(finite)[len(finite)//2]*100:.2f} cm, "
               f"max {max(finite)*100:.2f} cm")
     print(f"wrote        : {csv_path}")
+    print(f"               {meta_path}")
     print(f"               {html_path}")
     if png_path:
         print(f"               {png_path}")
