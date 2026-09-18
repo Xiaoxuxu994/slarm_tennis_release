@@ -102,6 +102,34 @@ def ball_centre_px(semantic, fallback=None):
     return (float(xs.mean()), float(ys.mean()))
 
 
+#: Locator box drawn around the ball on the full-size panels. Deliberately
+#: much larger than the 2.66 px ball: a box its own size would be as invisible
+#: as the ball is. This one is 7.5% of the frame width and leaves the ball
+#: itself unobscured inside it.
+BALL_BOX_PX = 24
+
+
+def draw_ball_box(image, centre, colour=(0, 220, 255), size=BALL_BOX_PX, label=None):
+    """Mark where the ball is on a full-size panel, in place.
+
+    The ball is 2.66 px across, so on the full frame it cannot be found, let
+    alone judged. A box does not make it any bigger; it says where to look, and
+    comparing the box on the GT row against the box on the predicted row shows
+    whether the model put the ball in the right place at all.
+    """
+    import cv2
+    if centre is None:
+        return image
+    half = size // 2
+    x, y = int(round(centre[0])), int(round(centre[1]))
+    cv2.rectangle(image, (x - half, y - half), (x + half, y + half), colour, 1,
+                  lineType=cv2.LINE_AA)
+    if label:
+        cv2.putText(image, label, (x - half, max(10, y - half - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1, lineType=cv2.LINE_AA)
+    return image
+
+
 def ball_zoom(image, centre, out_w, out_h, reference=None, note=None):
     """Crop a fixed window about `centre` and scale it to the panel size.
 
@@ -245,6 +273,11 @@ def main():
     p2.add_argument("--depth-max", "--depth_max", dest="depth_max", type=float, default=None,
                     help="depth colour ramp upper bound in metres; "
                          "default: 98th percentile of this scene's GT+pred depth")
+    p2.add_argument("--ball-zoom", "--ball_zoom", dest="ball_zoom", action="store_true",
+                    help="add a magnified crop row under the frame. Off by default: "
+                         "the yellow box already says where the ball is, and cropping "
+                         "to 16 px discards the scene to gain detail that 2.66 px "
+                         "does not carry. Turn it on to judge the ball's Gaussians.")
     p2.add_argument("--depth-curve", "--depth_curve", dest="depth_curve",
                     choices=("log", "linear"), default="log",
                     help="log (default) spreads the near field where the ball is; "
@@ -470,6 +503,17 @@ def main():
                 pred_img = np.clip(pred_img, 0, 1)
                 pred_img = (pred_img * 255).astype(np.uint8)
 
+                # Where each row says the ball is. The GT row marks the recorded
+                # ball, the predicted row marks the rendered one, so the two
+                # boxes drifting apart IS the position error, at full frame and
+                # without cropping anything away.
+                gt_centre = (ball_centre_px(gt_semantic[0, frame_idx, cam_idx].cpu().numpy())
+                             if gt_available else None)
+                pred_centre = None
+                if rendered_semantic is not None:
+                    _s = rendered_semantic[0, frame_idx, cam_idx].cpu().numpy()
+                    pred_centre = ball_centre_px(_s.argmax(0) if _s.ndim == 3 else _s)
+
                 pd_d = rendered_depth[0, frame_idx, cam_idx].cpu().float().numpy()
                 pd_dc = depth_to_color(pd_d, d_lo, d_hi, extra.depth_curve)
 
@@ -481,6 +525,11 @@ def main():
                 else:
                     pd_sc = np.zeros_like(gt_sc)
 
+                for panel in (gt_img, gt_dc, gt_sc):
+                    draw_ball_box(panel, gt_centre)
+                for panel in (pred_img, pd_dc, pd_sc):
+                    draw_ball_box(panel, pred_centre)
+
                 gt_block = np.concatenate([gt_img, gt_dc, gt_sc], axis=1)
                 pred_block = np.concatenate([pred_img, pd_dc, pd_sc], axis=1)
                 gt_row.append(gt_block)
@@ -489,11 +538,15 @@ def main():
             gt_full = np.concatenate(gt_row, axis=1)
             pred_full = np.concatenate(pred_row, axis=1)
 
-            # Zoom row. Mirrors the modality layout above so the widths match:
+            # Zoom row. Off by default: the box above says where the ball is,
+            # which is what a full frame cannot show, and cropping to 16 px
+            # throws the scene away to gain detail the 2.66 px does not carry.
+            # --ball-zoom brings it back for judging the Gaussians themselves.
+            # Mirrors the modality layout above so the widths match:
             # each view gets three panels, GT / predicted RGB / predicted
             # semantic, all cropped about the ball and magnified 10x.
-            zoom_row = []
-            for cam_idx in range(v):
+            zoom_row = [] if extra.ball_zoom else None
+            for cam_idx in range(v) if extra.ball_zoom else ():
                 pred_s = None
                 if rendered_semantic is not None:
                     pred_s = rendered_semantic[0, frame_idx, cam_idx].cpu().numpy()
@@ -528,8 +581,8 @@ def main():
                     ball_zoom(pred_sem_f, centre, w, h,
                               reference=centre if gt_available else None),
                 ], axis=1))
-            zoom_full = np.concatenate(zoom_row, axis=1)
-            zoom_label = make_label(
+            zoom_full = np.concatenate(zoom_row, axis=1) if zoom_row else None
+            zoom_label = None if zoom_full is None else make_label(
                 f"Ball zoom {BALL_ZOOM_CROP_W}x{BALL_ZOOM_CROP_H} px at "
                 f"{w // BALL_ZOOM_CROP_W}x, nearest neighbour, centred on the "
                 f"{'GT' if gt_available else 'predicted'} ball"
@@ -547,12 +600,15 @@ def main():
                 f"{gt_column_label}  [depth {d_lo:.1f}-{d_hi:.1f}m {extra.depth_curve}]",
                 w=col_label_w, h=18)
             col_labels_r = make_label(
-                f"Pred: RGB | Depth ({d_lo:.1f}-{d_hi:.1f}m {extra.depth_curve}) | Semantic",
+                f"Pred: RGB | Depth ({d_lo:.1f}-{d_hi:.1f}m {extra.depth_curve}) | Semantic"
+                f"   [yellow box = ball, {BALL_BOX_PX} px locator]",
                 w=col_label_w, h=18)
             col_labels = np.concatenate([col_labels_l, col_labels_r], axis=1)
 
-            frame = np.concatenate([label, col_labels, gt_full, pred_full,
-                                    zoom_label, zoom_full], axis=0)
+            stack = [label, col_labels, gt_full, pred_full]
+            if zoom_full is not None:
+                stack += [zoom_label, zoom_full]
+            frame = np.concatenate(stack, axis=0)
             frames.append(frame)
 
         out_path = os.path.join(extra.output_dir, f"scene_0{sid:03d}.mp4")

@@ -36,6 +36,41 @@ def _function(source: str, name: str) -> ast.FunctionDef:
                 if isinstance(node, ast.FunctionDef) and node.name == name)
 
 
+# ---------------------------------------------------------------- 黄色定位框
+
+BOX = _constant(RENDER_SRC.read_text(), "BALL_BOX_PX")
+
+
+def test_the_box_is_much_larger_than_the_ball():
+    """A box the ball's own size would be as invisible as the ball is. It marks
+    where to look; it does not pretend to show the ball."""
+    assert BOX / 2.66 > 5, "the box has to be findable on a full frame"
+    assert BOX / 320 < 0.15, "and it must not swallow the scene around it"
+
+
+def test_both_rows_get_a_box_from_their_own_source():
+    """The GT row marks the recorded ball and the predicted row the rendered
+    one. Drawing the GT box on both would hide the position error, which is the
+    one thing the two rows side by side are there to reveal."""
+    source = RENDER_SRC.read_text()
+    assert "draw_ball_box(panel, gt_centre)" in source
+    assert "draw_ball_box(panel, pred_centre)" in source
+
+
+def test_a_missing_ball_draws_nothing_rather_than_a_box_at_the_origin():
+    body = ast.unparse(_function(RENDER_SRC.read_text(), "draw_ball_box"))
+    assert "if centre is None" in body and "return image" in body
+
+
+def test_the_zoom_row_is_opt_in():
+    """Cropping to 16 px discards the scene to gain detail 2.66 px does not
+    carry; the box covers the common case without that trade."""
+    source = RENDER_SRC.read_text()
+    assert '"--ball-zoom"' in source
+    assert "zoom_row = [] if extra.ball_zoom else None" in source
+    assert "if zoom_full is not None:" in source, "the frame must assemble without it"
+
+
 # ---------------------------------------------------------------- 放大窗口
 
 CROP_W = _constant(RENDER_SRC.read_text(), "BALL_ZOOM_CROP_W")
