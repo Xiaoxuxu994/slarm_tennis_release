@@ -67,11 +67,39 @@ def test_the_ball_stays_inside_the_crop(centre):
     assert x0 <= centre[0] <= x1 and y0 <= centre[1] <= y1
 
 
-def test_the_magnification_makes_the_ball_visible():
-    """2.66 px is the reason this exists; below about ten pixels it is still a
-    smudge and the row would not have earned its space."""
-    magnified = 2.66 * 320 / CROP_W
-    assert magnified > 20, f"only {magnified:.1f} px after zoom"
+def test_the_ball_fills_enough_of_the_panel():
+    """The CROP WIDTH sets this, not the magnification: the ball occupies
+    ball_px / crop_w of the panel however it is scaled. A 32 px window leaves it
+    at 8% and still hard to read, which is what the first version did."""
+    fraction = 2.66 / CROP_W
+    assert fraction > 0.15, f"ball is only {fraction:.0%} of the panel"
+    assert 2.66 * 320 / CROP_W > 40, "and it should be dozens of pixels across"
+
+
+def test_the_crop_still_holds_the_ball_between_recentrings():
+    """Tightening the window trades slack for size; the window re-centres every
+    frame and the ball moves about 4.3 px per frame at this range."""
+    margin = (CROP_W - 2.66) / 2
+    assert margin / 4.3 > 1.0, f"only {margin / 4.3:.1f} frames of slack"
+
+
+def test_the_truth_ring_lands_on_the_ball():
+    """The ring marks where the ball truly is; if the crop offset were dropped
+    it would sit at the panel centre always and quietly agree with everything."""
+    for ball in ((160, 120), (3, 2), (317, 237)):
+        x0, y0, _, _ = window(ball)
+        cx = round((ball[0] - x0) * (320 / CROP_W))
+        cy = round((ball[1] - y0) * (240 / CROP_H))
+        assert 0 <= cx <= 320 and 0 <= cy <= 240
+        # Re-projecting back has to recover the ball's own pixel.
+        assert abs(x0 + cx / (320 / CROP_W) - ball[0]) < 0.6
+        assert abs(y0 + cy / (240 / CROP_H) - ball[1]) < 0.6
+
+
+def test_the_empty_gt_panel_says_why_it_is_empty():
+    """Past the recorded clip there is no truth to show; a black panel reads as
+    a rendering failure."""
+    assert "no GT past frame 24" in RENDER_SRC.read_text()
 
 
 def test_zoom_uses_nearest_neighbour():

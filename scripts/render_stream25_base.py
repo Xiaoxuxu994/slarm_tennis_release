@@ -82,8 +82,16 @@ def configure_reconstruction_timeline(input_dict, num_frames):
 #: These crop a window around it and blow it up with nearest-neighbour, which
 #: keeps the pixel grid visible; smoothing here would invent detail that the
 #: 2.66 px never had.
-BALL_ZOOM_CROP_W = 32
-BALL_ZOOM_CROP_H = 24
+#:
+#: ★ The crop WIDTH sets how big the ball looks, not the magnification. The ball
+#:   occupies ball_px / crop_w of the panel whatever it is scaled to, so a
+#:   32 px window leaves it at 8% of the panel and still hard to read; 16 px
+#:   puts it at 17%. The ball moves about 4.3 px per frame at this range and the
+#:   window re-centres every frame, so 16 px still carries 1.6 frames of slack.
+BALL_ZOOM_CROP_W = 16
+BALL_ZOOM_CROP_H = 12
+#: Ball diameter in pixels at this rig and range, for the reference ring.
+BALL_DIAMETER_PX = 2.66
 
 
 def ball_centre_px(semantic, fallback=None):
@@ -94,8 +102,14 @@ def ball_centre_px(semantic, fallback=None):
     return (float(xs.mean()), float(ys.mean()))
 
 
-def ball_zoom(image, centre, out_w, out_h):
-    """Crop a fixed window about `centre` and scale it to the panel size."""
+def ball_zoom(image, centre, out_w, out_h, reference=None, note=None):
+    """Crop a fixed window about `centre` and scale it to the panel size.
+
+    ``reference`` draws a ring of the true ball's size at that image position,
+    so a predicted ball that sits beside the ring rather than inside it is
+    visible without comparing two panels by eye. ``note`` labels a panel that
+    is deliberately empty, which otherwise reads as a rendering failure.
+    """
     import cv2
     h, w = image.shape[:2]
     if centre is None:
@@ -108,8 +122,19 @@ def ball_zoom(image, centre, out_w, out_h):
     y0 = int(round(min(max(centre[1] - half_h, 0), max(0, h - BALL_ZOOM_CROP_H))))
     crop = image[y0:y0 + BALL_ZOOM_CROP_H, x0:x0 + BALL_ZOOM_CROP_W]
     if crop.size == 0:
-        return np.zeros((out_h, out_w, 3), dtype=np.uint8)
-    return cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+        panel = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    else:
+        panel = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+    if reference is not None:
+        scale = out_w / BALL_ZOOM_CROP_W
+        cx = int(round((reference[0] - x0) * scale))
+        cy = int(round((reference[1] - y0) * (out_h / BALL_ZOOM_CROP_H)))
+        radius = max(3, int(round(BALL_DIAMETER_PX / 2 * scale)))
+        cv2.circle(panel, (cx, cy), radius, (90, 255, 90), 1, lineType=cv2.LINE_AA)
+    if note:
+        cv2.putText(panel, note, (8, out_h - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (150, 150, 150), 1, lineType=cv2.LINE_AA)
+    return panel
 
 
 def make_label(text, w=320, h=20):
@@ -490,16 +515,25 @@ def main():
                                       .numpy(), 0, 1) * 255).astype(np.uint8)
                 pred_sem_f = (semantic_to_color(pred_s) if pred_s is not None
                               else np.zeros((h, w, 3), dtype=np.uint8))
+                # The reference ring marks where the ball truly is, at its true
+                # size, in every panel. Past the recorded clip there is no truth
+                # to mark and the GT panel is empty by construction -- it says so
+                # rather than going black, which reads as a rendering failure.
                 zoom_row.append(np.concatenate([
-                    ball_zoom(gt_img_f, centre, w, h),
-                    ball_zoom(pred_img_f, centre, w, h),
-                    ball_zoom(pred_sem_f, centre, w, h),
+                    ball_zoom(gt_img_f, centre, w, h,
+                              reference=centre if gt_available else None,
+                              note=None if gt_available else "no GT past frame 24"),
+                    ball_zoom(pred_img_f, centre, w, h,
+                              reference=centre if gt_available else None),
+                    ball_zoom(pred_sem_f, centre, w, h,
+                              reference=centre if gt_available else None),
                 ], axis=1))
             zoom_full = np.concatenate(zoom_row, axis=1)
             zoom_label = make_label(
                 f"Ball zoom {BALL_ZOOM_CROP_W}x{BALL_ZOOM_CROP_H} px at "
                 f"{w // BALL_ZOOM_CROP_W}x, nearest neighbour, centred on the "
-                f"{'GT' if gt_available else 'predicted'} ball:  "
+                f"{'GT' if gt_available else 'predicted'} ball"
+                f"{'; green ring = true ball, true size' if gt_available else ''}:  "
                 f"GT RGB | Pred RGB | Pred semantic",
                 w=zoom_full.shape[1], h=18)
 
