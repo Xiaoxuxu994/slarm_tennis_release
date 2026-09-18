@@ -288,7 +288,11 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--scene", type=int, default=0, help="index into the eval manifest")
+    parser.add_argument("--scene", default="0",
+                        help="index into the eval manifest; a comma list runs several "
+                             "in one model load, e.g. 0,7,12. tools/pick_scenes.py "
+                             "ranks them from an existing report so this does not have "
+                             "to be a fishing trip")
     parser.add_argument("--num-frames", type=int, default=46,
                         help="render this many frames; past the stored ones the model "
                              "is extrapolating and truth is continued analytically")
@@ -310,13 +314,45 @@ def main() -> int:
                               checkpoint_role="evaluation")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = build_stream25_dataset(args, "validation", online_feat=False)
-    if not 0 <= cli.scene < len(dataset):
-        parser.error(f"--scene must be in [0, {len(dataset)})")
+    try:
+        wanted = [int(piece) for piece in str(cli.scene).split(",") if piece.strip()]
+    except ValueError:
+        parser.error("--scene takes an index or a comma list of indices")
+    if not wanted:
+        parser.error("--scene is empty")
+    for index in wanted:
+        if not 0 <= index < len(dataset):
+            parser.error(f"--scene {index} is outside [0, {len(dataset)})")
+    # Load the checkpoint once; it is the expensive part and it does not vary.
     model = build_stream25_model(args, device)
     model.eval()
 
-    sample = dataset[cli.scene]
-    scene_name = sample.get("scene_name", str(cli.scene))
+    summary = []
+    for scene_index in wanted:
+        summary.append(export_one(
+            cli, args, dataset, model, device, scene_index,
+            base=(cli.output if len(wanted) == 1
+                  else cli.output.with_name(f"{cli.output.name}_scene{scene_index:04d}")),
+        ))
+    if len(summary) > 1:
+        print("")
+        print(f"{'scene':>7}{'median err':>13}{'max err':>10}{'ball found':>12}")
+        for row in summary:
+            print(f"{row['scene']:>7}{row['median'] * 100:>11.2f} cm"
+                  f"{row['max'] * 100:>8.2f} cm{row['found']:>12}")
+    return 0
+
+
+def export_one(cli, args, dataset, model, device, scene_index, base):
+    """One scene, from the already-loaded model, to CSV / JSON / HTML / PNG."""
+    import torch
+    from scripts.render_stream25_base import configure_reconstruction_timeline
+    from src.dataset.data_utils import to_batch_tensor, prepare_inputs_and_targets
+    from src.utils.misc import camera_names_from_arguments
+    from src.utils.stream25_metrics import set_camera_order
+
+    sample = dataset[scene_index]
+    scene_name = sample.get("scene_name", str(scene_index))
 
     batch = to_batch_tensor(sample)
     batch["num_max_cams"] = int(batch["num_max_cams"][0]) if not isinstance(
@@ -341,7 +377,8 @@ def main() -> int:
     truth_all = target_dict.get("ball_position_rig")
     velocity_all = target_dict.get("ball_velocity_rig")
     if truth_all is None or velocity_all is None:
-        parser.error("this dataset has no ball_position_rig / ball_velocity_rig")
+        raise SystemExit("[FAIL] this dataset has no ball_position_rig / "
+                         "ball_velocity_rig; the track has nothing to compare against")
     truth_all = truth_all[0].float().cpu()
     gravity = torch.tensor(MS3_GRAVITY_RIG, dtype=torch.float32)
     step = float(args.timespan) / 24.0
@@ -369,7 +406,7 @@ def main() -> int:
         errors = [None if p is None else math.dist(p, gt) for p in per_view]
         rows.append({"views": per_view, "gt": gt, "err": errors})
 
-    csv_path = cli.output.with_suffix(".csv")
+    csv_path = base.with_suffix(".csv")
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w") as handle:
         handle.write("frame,view,pred_x,pred_y,pred_z,gt_x,gt_y,gt_z,error_m,truth_source\n")
@@ -383,7 +420,7 @@ def main() -> int:
                              f"{row['gt'][0]:.6f},{row['gt'][1]:.6f},{row['gt'][2]:.6f},"
                              f"{err},{source}\n")
 
-    html_path = cli.output.with_suffix(".html")
+    html_path = base.with_suffix(".html")
     write_html(html_path, rows, frames, view_names, scene_name,
                Path(cli.checkpoint).name, last)
 
@@ -392,10 +429,10 @@ def main() -> int:
     # with no GPU and no checkpoint. Guessing these from defaults would be one
     # silently wrong number away from an animation that looks fine and is not.
     import json as _json
-    meta_path = cli.output.with_suffix(".json")
+    meta_path = base.with_suffix(".json")
     meta_path.write_text(_json.dumps({
         "scene": scene_name,
-        "scene_index": cli.scene,
+        "scene_index": scene_index,
         "checkpoint": Path(cli.checkpoint).name,
         "views": view_names,
         "frames": frames,
@@ -408,7 +445,7 @@ def main() -> int:
     }, indent=2), encoding="utf-8")
 
     png_path = plot_3d(
-        cli.output.parent / f"{cli.output.name}_3d.png", rows, frames, view_names,
+        base.parent / f"{base.name}_3d.png", rows, frames, view_names,
         scene_name, Path(cli.checkpoint).name, last,
         catch_frame=min(int(getattr(args, "stream25_catch_frame", 45) or 45),
                         len(frames) - 1),
@@ -416,7 +453,7 @@ def main() -> int:
 
     finite = [e for row in rows for e in row["err"] if e is not None]
     missing = sum(1 for row in rows for e in row["err"] if e is None)
-    print(f"scene        : {scene_name} (index {cli.scene})")
+    print(f"scene        : {scene_name} (index {scene_index})")
     print(f"frames       : {frames[0]}..{frames[-1]}  "
           f"(truth stored through {last}, continued after)")
     print(f"ball found   : {len(finite)} of {len(frames) * len(view_names)} view-frames"
@@ -435,7 +472,11 @@ def main() -> int:
     print("In the plot: a smoothly DRIFTING error is indistinguishable from velocity")
     print("to a ballistic fit, and is the known reason the fitted velocity sits over")
     print("twice its noise floor. Scatter about zero is harmless by comparison.")
-    return 0
+    print("")
+    ordered = sorted(finite)
+    return {"scene": scene_index, "found": len(finite),
+            "median": ordered[len(ordered) // 2] if ordered else float("nan"),
+            "max": max(finite) if finite else float("nan")}
 
 
 if __name__ == "__main__":
