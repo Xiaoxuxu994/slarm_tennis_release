@@ -186,6 +186,33 @@ def test_every_step_shares_one_set_of_axes():
     assert source.count("axes.set_xlim") == 1
 
 
+def test_bare_drops_the_chrome_and_keeps_the_plot():
+    """A slide carries its own caption, so the figure repeating it wastes the
+    frame. Everything --bare removes is still in the CSV beside it."""
+    source = SRC.read_text()
+    assert '"--bare"' in source
+    assert "if not cli.bare:" in source, "the legend has to be conditional"
+    assert "if cli.bare:" in source
+    assert "rect=(0, 0, 1, 1)" in source, "the axes should take the whole figure"
+
+
+def test_bare_does_not_change_what_is_drawn():
+    """Only the chrome goes. If --bare also dropped a series, two clips of the
+    same scene would disagree and neither would say why."""
+    tree = ast.parse(SRC.read_text())
+    main = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
+    guarded = set()
+    for node in ast.walk(main):
+        if isinstance(node, ast.If) and "cli.bare" in ast.unparse(node.test):
+            guarded |= {ast.unparse(n.func) for n in ast.walk(node)
+                        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    drawing = {name for name in guarded
+               if any(verb in name for verb in ("plot", "scatter", "set_xlim",
+                                                "set_zlim", "view_init"))}
+    assert not drawing, f"--bare must not gate the data itself: {sorted(drawing)}"
+
+
 def test_the_pooling_difference_is_disclosed_on_the_figure():
     """Pooling views is kinder than the evaluator's worst-view rule, so the
     error drawn here is smaller than the reported one.

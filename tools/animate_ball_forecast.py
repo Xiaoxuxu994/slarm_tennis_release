@@ -120,6 +120,10 @@ def main() -> int:
                         help="repeat the final step this many times, so the last "
                              "forecast is readable before the clip loops")
     parser.add_argument("--dpi", type=int, default=150)
+    parser.add_argument("--bare", action="store_true",
+                        help="plot only: no title, caption or legend, and the axes "
+                             "take the whole figure. For a slide that carries its "
+                             "own caption; the numbers it drops are still in the CSV")
     cli = parser.parse_args()
 
     if cli.fps is None:
@@ -283,25 +287,30 @@ def main() -> int:
                 axes.view_init(elev=16, azim=-62 + sweep)
                 axes.set_xlabel("x (m)"); axes.set_ylabel("y (m)"); axes.set_zlabel("z (m)")
                 axes.tick_params(labelsize=7)
-                axes.legend(loc="upper left", fontsize=8, frameon=False)
+                if not cli.bare:
+                    axes.legend(loc="upper left", fontsize=8, frameon=False)
 
-                figure.suptitle(heading, x=0.06, ha="left", fontsize=15,
-                                fontweight="semibold")
-                figure.text(0.06, 0.905,
-                            f"scene {meta['scene']}   {meta['checkpoint']}   {detail}",
-                            fontsize=10, color=TRUTH_COLOUR)
-                if cli.mode == "forecast":
-                    figure.text(0.06, 0.03,
-                                "Views pooled before the fit; the evaluator takes the "
-                                "worst view, so its error is larger than this.",
-                                fontsize=8, color="#6E756F")
-                figure.tight_layout(rect=(0, 0.05, 1, 0.88))
+                if cli.bare:
+                    figure.tight_layout(rect=(0, 0, 1, 1))
+                else:
+                    figure.suptitle(heading, x=0.06, ha="left", fontsize=15,
+                                    fontweight="semibold")
+                    figure.text(0.06, 0.905,
+                                f"scene {meta['scene']}   {meta['checkpoint']}   {detail}",
+                                fontsize=10, color=TRUTH_COLOUR)
+                    if cli.mode == "forecast":
+                        figure.text(0.06, 0.03,
+                                    "Views pooled before the fit; the evaluator takes "
+                                    "the worst view, so its error is larger than this.",
+                                    fontsize=8, color="#6E756F")
+                    figure.tight_layout(rect=(0, 0.05, 1, 0.88))
                 figure.canvas.draw()
                 writer.append_data(np.asarray(figure.canvas.buffer_rgba())[..., :3].copy())
                 plt.close(figure)
 
     print(f"scene       : {meta['scene']}   {meta['checkpoint']}")
-    print(f"mode        : {cli.mode}, {len(order)} frames at {cli.fps:g} fps")
+    print(f"mode        : {cli.mode}, {len(order)} frames at {cli.fps:g} fps"
+          + ("  [bare: no title, caption or legend]" if cli.bare else ""))
     if cli.mode == "forecast":
         print(f"{'observations':<14}{'landing error':>15}{'':>3}{'verdict':<16}")
         for state in steps:
