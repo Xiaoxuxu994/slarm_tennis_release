@@ -62,6 +62,30 @@ def test_a_missing_ball_draws_nothing_rather_than_a_box_at_the_origin():
     assert "if centre is None" in body and "return image" in body
 
 
+def test_panels_are_made_cv2_compatible_before_drawing():
+    """OpenCV refuses anything that is not a plain contiguous uint8 buffer, and
+    these panels come from permutes, colormap slices and fancy indexing."""
+    body = ast.unparse(_function(RENDER_SRC.read_text(), "draw_ball_box"))
+    assert "ascontiguousarray" in body
+
+
+def test_callers_use_the_returned_panel():
+    """Making an array contiguous can copy it. Drawing into a copy the caller
+    discards is a silent no-op, not an error, so the box would just be absent."""
+    source = RENDER_SRC.read_text()
+    assert "gt_img = draw_ball_box(gt_img" in source
+    assert "pd_sc = draw_ball_box(pd_sc" in source
+    assert "for panel in (" not in source, "the in-place loop drew into copies"
+
+
+def test_cv2_drawing_arguments_stay_positional():
+    """cv2.rectangle has a second overload taking a Rect. A keyword argument
+    makes the resolver report its mismatch against that overload instead of the
+    real problem, which is how the first failure hid behind a wrong message."""
+    source = RENDER_SRC.read_text()
+    assert "lineType=" not in source
+
+
 def test_the_zoom_row_is_opt_in():
     """Cropping to 16 px discards the scene to gain detail 2.66 px does not
     carry; the box covers the common case without that trade."""

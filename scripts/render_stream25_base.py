@@ -110,23 +110,34 @@ BALL_BOX_PX = 24
 
 
 def draw_ball_box(image, centre, colour=(0, 220, 255), size=BALL_BOX_PX, label=None):
-    """Mark where the ball is on a full-size panel, in place.
+    """Mark where the ball is on a full-size panel. Returns the panel to use.
 
     The ball is 2.66 px across, so on the full frame it cannot be found, let
     alone judged. A box does not make it any bigger; it says where to look, and
     comparing the box on the GT row against the box on the predicted row shows
     whether the model put the ball in the right place at all.
+
+    ★ Use the return value. These panels arrive from permutes, colormap slices
+      and fancy indexing, and OpenCV refuses anything whose memory layout is not
+      a plain contiguous buffer ("Layout of the output array img is incompatible
+      with cv::Mat"). Making it contiguous can copy, and drawing into a copy
+      that the caller then discards is a silent no-op rather than an error.
     """
     import cv2
     if centre is None:
         return image
+    # uint8 and C-contiguous is what cv2 wants, and asking is cheaper than
+    # working out which of several producers returned a view this time.
+    image = np.ascontiguousarray(image, dtype=np.uint8)
     half = size // 2
     x, y = int(round(centre[0])), int(round(centre[1]))
-    cv2.rectangle(image, (x - half, y - half), (x + half, y + half), colour, 1,
-                  lineType=cv2.LINE_AA)
+    # Positional only: cv2.rectangle has a second overload taking a Rect, and a
+    # keyword here makes the resolver report the mismatch against that one
+    # instead of the real problem.
+    cv2.rectangle(image, (x - half, y - half), (x + half, y + half), colour, 1)
     if label:
         cv2.putText(image, label, (x - half, max(10, y - half - 4)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1, lineType=cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1)
     return image
 
 
@@ -152,16 +163,18 @@ def ball_zoom(image, centre, out_w, out_h, reference=None, note=None):
     if crop.size == 0:
         panel = np.zeros((out_h, out_w, 3), dtype=np.uint8)
     else:
-        panel = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+        panel = cv2.resize(np.ascontiguousarray(crop, dtype=np.uint8),
+                           (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+    panel = np.ascontiguousarray(panel, dtype=np.uint8)
     if reference is not None:
         scale = out_w / BALL_ZOOM_CROP_W
         cx = int(round((reference[0] - x0) * scale))
         cy = int(round((reference[1] - y0) * (out_h / BALL_ZOOM_CROP_H)))
         radius = max(3, int(round(BALL_DIAMETER_PX / 2 * scale)))
-        cv2.circle(panel, (cx, cy), radius, (90, 255, 90), 1, lineType=cv2.LINE_AA)
+        cv2.circle(panel, (cx, cy), radius, (90, 255, 90), 1)
     if note:
         cv2.putText(panel, note, (8, out_h - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5, (150, 150, 150), 1, lineType=cv2.LINE_AA)
+                    0.5, (150, 150, 150), 1)
     return panel
 
 
@@ -525,10 +538,12 @@ def main():
                 else:
                     pd_sc = np.zeros_like(gt_sc)
 
-                for panel in (gt_img, gt_dc, gt_sc):
-                    draw_ball_box(panel, gt_centre)
-                for panel in (pred_img, pd_dc, pd_sc):
-                    draw_ball_box(panel, pred_centre)
+                gt_img = draw_ball_box(gt_img, gt_centre)
+                gt_dc = draw_ball_box(gt_dc, gt_centre)
+                gt_sc = draw_ball_box(gt_sc, gt_centre)
+                pred_img = draw_ball_box(pred_img, pred_centre)
+                pd_dc = draw_ball_box(pd_dc, pred_centre)
+                pd_sc = draw_ball_box(pd_sc, pred_centre)
 
                 gt_block = np.concatenate([gt_img, gt_dc, gt_sc], axis=1)
                 pred_block = np.concatenate([pred_img, pd_dc, pd_sc], axis=1)
