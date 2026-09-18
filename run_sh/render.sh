@@ -5,10 +5,11 @@ set -euo pipefail
 # 输出目录按 config 名 + ckpt 名自动生成，切换实验 / 权重时不会互相覆盖。
 
 GPUS="0"
-CONFIG="configs/slarm_stream25_24cm_triview_window6.yaml"
-CKPT="ckpts/ckpt_034999.pth"
+CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
+CKPT="work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_019999.pth"
 SCENE_IDS="0,1,2"      # validation manifest 内的局部下标（不是全局 scene 编号）
-NUM_FRAMES=40          # 渲染 [0,N)；>25 为外推（无 GT），肉眼判断落点最直观
+NUM_FRAMES=46          # 渲染 [0,N)；>25 为外推（无 GT）。46 一直画到接球帧 45，
+                       # 那是任务真正关心、也是没有存储真值的那一帧
 
 # 例：6.5cm nolseg
 # CONFIG="configs/exp0819_001_slarm_stream25_24cm_triview_window6_uplr_nolseg.yaml"
