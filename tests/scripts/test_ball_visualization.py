@@ -41,6 +41,31 @@ def _function(source: str, name: str) -> ast.FunctionDef:
 BOX = _constant(RENDER_SRC.read_text(), "BALL_BOX_PX")
 
 
+def test_the_box_is_actually_the_colour_the_label_claims():
+    """The frames are RGB -- imageio writes RGB, and semantic_to_color paints the
+    ball class [255, 255, 0] and gets yellow. The first value here was
+    (0, 220, 255), which is cyan under that convention while the column label
+    said yellow; nothing in the pipeline would have complained."""
+    tree = ast.parse(RENDER_SRC.read_text())
+    colour = next(ast.literal_eval(node.value) for node in tree.body
+                  if isinstance(node, ast.Assign)
+                  and any(getattr(t, "id", "") == "BALL_BOX_RGB" for t in node.targets))
+    red, green, blue = colour
+    assert red > 200 and green > 150 and blue < 80, f"{colour} does not read as yellow"
+    assert "yellow box" in RENDER_SRC.read_text(), "and the label should say so"
+
+
+def test_the_box_is_distinguishable_from_the_ball_in_the_semantic_panel():
+    """That panel paints the ball [255, 255, 0]. A box in exactly the ball's
+    colour is hardest to read on the one panel where the ball is easiest to find."""
+    tree = ast.parse(RENDER_SRC.read_text())
+    colour = next(ast.literal_eval(node.value) for node in tree.body
+                  if isinstance(node, ast.Assign)
+                  and any(getattr(t, "id", "") == "BALL_BOX_RGB" for t in node.targets))
+    assert colour != (255, 255, 0)
+    assert sum(abs(a - b) for a, b in zip(colour, (255, 255, 0))) > 30
+
+
 def test_the_box_is_much_larger_than_the_ball():
     """A box the ball's own size would be as invisible as the ball is. It marks
     where to look; it does not pretend to show the ball."""

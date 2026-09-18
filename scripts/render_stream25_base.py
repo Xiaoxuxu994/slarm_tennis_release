@@ -108,8 +108,18 @@ def ball_centre_px(semantic, fallback=None):
 #: itself unobscured inside it.
 BALL_BOX_PX = 24
 
+#: Box colour, RGB -- imageio writes RGB and semantic_to_color already proves it
+#: by painting the ball class [255, 255, 0] and having it come out yellow. An
+#: earlier value here was (0, 220, 255), which in RGB is cyan, while the column
+#: label said yellow.
+#:
+#: Amber rather than pure yellow: the semantic panel paints the ball itself
+#: [255, 255, 0], and a box in exactly the ball's colour is the one panel where
+#: it would be hardest to tell the two apart.
+BALL_BOX_RGB = (255, 205, 0)
 
-def draw_ball_box(image, centre, colour=(0, 220, 255), size=BALL_BOX_PX, label=None):
+
+def draw_ball_box(image, centre, colour=BALL_BOX_RGB, size=BALL_BOX_PX, label=None):
     """Mark where the ball is on a full-size panel. Returns the panel to use.
 
     The ball is 2.66 px across, so on the full frame it cannot be found, let
