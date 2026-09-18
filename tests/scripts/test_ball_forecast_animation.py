@@ -188,6 +188,12 @@ def test_every_step_shares_one_set_of_axes():
 
 def test_the_pooling_difference_is_disclosed_on_the_figure():
     """Pooling views is kinder than the evaluator's worst-view rule, so the
-    error drawn here is smaller than the reported one."""
+    error drawn here is smaller than the reported one.
+
+    Matched on a fragment short enough to survive rewrapping: the first version
+    of this test spanned a line break in the source string and went red on an
+    edit that changed nothing it was meant to protect.
+    """
     source = SRC.read_text()
-    assert "the evaluator takes the worst" in source
+    assert "Views pooled before the fit" in source
+    assert "worst" in source and "larger than this" in source
