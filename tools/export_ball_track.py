@@ -17,8 +17,11 @@ the analytic ballistic continuation beyond it, marked as such in the output.
         --checkpoint work_dirs/.../ckpt_013999.pth \\
         --scene 0 --num-frames 46 --output ball_track
 
-Writes <output>.csv (one row per frame and view) and <output>.html (a plot of
-the three axes and of the error, openable in a browser).
+Writes three files:
+  <output>.csv     one row per frame and view
+  <output>.html    the three axes and the error, openable in a browser
+  <output>_3d.png  the trajectory in space, truth against prediction, with the
+                   catch ring drawn where the ball is supposed to arrive
 
 Two things worth looking for in the plot:
   - Does the error DRIFT smoothly across frames, or scatter about zero? A
@@ -63,6 +66,123 @@ def ball_positions(depth, semantic, origins, directions, canonical_to_rig) -> Li
         centre = transform_position(points[eye][mask].median(dim=0).values, canonical_to_rig)
         out.append([float(x) for x in centre])
     return out
+
+
+def plot_3d(path, rows, frames, views, scene, checkpoint, last_stored,
+            catch_frame, ring_radius, ball_radius) -> Optional[str]:
+    """The trajectory in space: truth as a line, each view's readings as points.
+
+    The three separate axis plots show WHEN the track goes wrong; this shows
+    WHERE. It also draws the catch ring at the true landing point, oriented
+    across the ball's arrival direction, so the landing error can be seen
+    against the aperture it has to fit through rather than compared to a
+    tolerance in a table.
+
+    Returns None when matplotlib is absent, since everything else still works.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        return None
+
+    truth = np.array([r["gt"] for r in rows], dtype=float)
+    figure = plt.figure(figsize=(13, 5.6))
+    colours = ["#2E6389", "#B33D33", "#2B7A56"]
+
+    # Left: the whole arc. Right: the catch, close enough to see the ring.
+    # One panel cannot do both -- the arc spans about three metres and the ring
+    # is 0.27, so at full extent the aperture is a smudge and the landing error
+    # cannot be read against the thing it has to fit through.
+    for position, (elev, azim, title, closeup) in enumerate((
+            (18, -62, "whole flight", False),
+            (14, -62, f"at the catch (frame {catch_frame})", True)), start=1):
+        axes = figure.add_subplot(1, 2, position, projection="3d")
+        span = (slice(max(0, catch_frame - 6), catch_frame + 1)
+                if closeup and catch_frame < len(truth) else slice(None))
+        axes.plot(truth[span, 0], truth[span, 1], truth[span, 2],
+                  color="#171A18", linewidth=1.8,
+                  label="truth" if position == 1 else None, zorder=2)
+        for index, view in enumerate(views):
+            subset = rows[span] if isinstance(span, slice) else rows
+            points = np.array([r["views"][index] for r in subset
+                               if r["views"][index] is not None], dtype=float)
+            if len(points):
+                axes.scatter(points[:, 0], points[:, 1], points[:, 2], s=9,
+                             color=colours[index % len(colours)], alpha=0.8,
+                             label=view if position == 1 else None,
+                             depthshade=False, zorder=3)
+
+        # The terminal observation is where every prediction is made from, and
+        # the catch is where it is scored, so both are worth finding by eye.
+        for frame, marker, colour, label in (
+                (15, "s", "#C4D62C", "frame 15 (terminal)"),
+                (catch_frame, "*", "#B33D33", f"frame {catch_frame} (catch)")):
+            if frame < len(truth):
+                axes.scatter(*truth[frame], s=110, marker=marker, color=colour,
+                             edgecolors="#171A18", linewidths=0.8, zorder=5,
+                             label=label if position == 1 else None)
+
+        # The ring, drawn across the arrival direction at the true landing.
+        if catch_frame < len(truth) and catch_frame >= 1:
+            direction = truth[catch_frame] - truth[catch_frame - 1]
+            norm = np.linalg.norm(direction)
+            if norm > 1e-9:
+                axis = direction / norm
+                seed = np.array([1.0, 0.0, 0.0])
+                if abs(axis[0]) > 0.9:
+                    seed = np.array([0.0, 1.0, 0.0])
+                u = np.cross(axis, seed)
+                u /= np.linalg.norm(u)
+                w = np.cross(axis, u)
+                angle = np.linspace(0, 2 * np.pi, 80)
+                ring = (truth[catch_frame][None, :]
+                        + ring_radius * (np.cos(angle)[:, None] * u[None, :]
+                                         + np.sin(angle)[:, None] * w[None, :]))
+                axes.plot(ring[:, 0], ring[:, 1], ring[:, 2], color="#2E6389",
+                          linewidth=2.4, zorder=4,
+                          label="catch ring" if position == 1 else None)
+
+        # The predicted landing itself, which is what the success criterion
+        # scores. Only drawn in the close-up, where it is not a dot on a dot.
+        if closeup and catch_frame < len(rows):
+            for index, view in enumerate(views):
+                landing = rows[catch_frame]["views"][index]
+                if landing is not None:
+                    axes.scatter(*landing, s=90, marker="o",
+                                 color=colours[index % len(colours)],
+                                 edgecolors="#171A18", linewidths=0.8, zorder=6)
+
+        # Equal scale on all three axes, or a 3 m arc in a 0.3 m box reads as a
+        # different shape entirely.
+        if closeup and catch_frame < len(truth):
+            centre = truth[catch_frame]
+            reach = ring_radius * 2.2
+        else:
+            spans = np.stack([truth.min(axis=0), truth.max(axis=0)])
+            centre = spans.mean(axis=0)
+            reach = max(float((spans[1] - spans[0]).max()) * 0.55, 0.1)
+        axes.set_xlim(centre[0] - reach, centre[0] + reach)
+        axes.set_ylim(centre[1] - reach, centre[1] + reach)
+        axes.set_zlim(centre[2] - reach, centre[2] + reach)
+        axes.set_box_aspect((1, 1, 1))
+        axes.view_init(elev=elev, azim=azim)
+        axes.set_xlabel("x (m)"); axes.set_ylabel("y (m)"); axes.set_zlabel("z (m)")
+        axes.set_title(title, fontsize=10)
+        axes.tick_params(labelsize=7)
+
+    figure.suptitle(
+        f"Ball track  |  scene {scene}  |  {checkpoint}  |  "
+        f"truth stored through frame {last_stored}, ballistically continued after",
+        fontsize=10)
+    figure.legend(*figure.axes[0].get_legend_handles_labels(),
+                  loc="lower center", ncol=6, fontsize=8, frameon=False)
+    figure.tight_layout(rect=(0, 0.06, 1, 0.96))
+    figure.savefig(path, dpi=170)
+    plt.close(figure)
+    return str(path)
 
 
 def svg_plot(rows: List[Dict[str, Any]], frames: List[int], axis: int, name: str,
@@ -171,6 +291,9 @@ def main() -> int:
                         help="render this many frames; past the stored ones the model "
                              "is extrapolating and truth is continued analytically")
     parser.add_argument("--output", type=Path, default=Path("ball_track"))
+    parser.add_argument("--ring-diameter", type=float, default=0.27,
+                        help="catch ring diameter in metres, drawn at the landing "
+                             "point so the error can be seen against the aperture")
     cli = parser.parse_args()
 
     from scripts.render_stream25_base import configure_reconstruction_timeline
@@ -262,6 +385,14 @@ def main() -> int:
     write_html(html_path, rows, frames, view_names, scene_name,
                Path(cli.checkpoint).name, last)
 
+    ball_radius = float(getattr(args, "stream25_ball_radius", 0.0325) or 0.0325)
+    png_path = plot_3d(
+        cli.output.parent / f"{cli.output.name}_3d.png", rows, frames, view_names,
+        scene_name, Path(cli.checkpoint).name, last,
+        catch_frame=min(int(getattr(args, "stream25_catch_frame", 45) or 45),
+                        len(frames) - 1),
+        ring_radius=cli.ring_diameter / 2, ball_radius=ball_radius)
+
     finite = [e for row in rows for e in row["err"] if e is not None]
     missing = sum(1 for row in rows for e in row["err"] if e is None)
     print(f"scene        : {scene_name} (index {cli.scene})")
@@ -274,6 +405,10 @@ def main() -> int:
               f"max {max(finite)*100:.2f} cm")
     print(f"wrote        : {csv_path}")
     print(f"               {html_path}")
+    if png_path:
+        print(f"               {png_path}")
+    else:
+        print("               (no 3D png: matplotlib is not installed)")
     print("")
     print("In the plot: a smoothly DRIFTING error is indistinguishable from velocity")
     print("to a ballistic fit, and is the known reason the fitted velocity sits over")

@@ -160,3 +160,87 @@ def test_semantic_comes_from_the_context_pixels_not_the_targets():
     different length and would raise, or worse, happen to match."""
     source = RENDER_SRC.read_text()
     assert 'input_dict.get("context_task_semantic")' in source
+
+
+# ---------------------------------------------------------------- 三维轨迹图
+
+TRACK_SRC = ROOT / "tools" / "export_ball_track.py"
+
+
+def ring_points(catch, previous, radius, count=80):
+    """The ring construction plot_3d performs, without numpy."""
+    direction = [a - b for a, b in zip(catch, previous)]
+    norm = math.sqrt(sum(x * x for x in direction))
+    axis = [x / norm for x in direction]
+    seed = [0.0, 1.0, 0.0] if abs(axis[0]) > 0.9 else [1.0, 0.0, 0.0]
+
+    def cross(a, b):
+        return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0]]
+
+    u = cross(axis, seed)
+    length = math.sqrt(sum(x * x for x in u))
+    u = [x / length for x in u]
+    w = cross(axis, u)
+    points = []
+    for index in range(count):
+        angle = 2 * math.pi * index / count
+        points.append([catch[k] + radius * (math.cos(angle) * u[k]
+                                            + math.sin(angle) * w[k])
+                       for k in range(3)])
+    return points, axis
+
+
+def test_the_drawn_ring_is_a_circle_of_the_right_size():
+    catch, previous, radius = [0.0, 0.0, 0.0], [0.0, 0.070, 0.247], 0.135
+    points, _ = ring_points(catch, previous, radius)
+    distances = [math.dist(p, catch) for p in points]
+    assert max(distances) == pytest.approx(radius, abs=1e-9)
+    assert min(distances) == pytest.approx(radius, abs=1e-9)
+
+
+def test_the_ring_faces_the_arriving_ball():
+    """A ring drawn in any other plane would show a wider opening than the ball
+    actually has to pass through."""
+    catch, previous, radius = [0.0, 0.0, 0.0], [0.0, 0.070, 0.247], 0.135
+    points, axis = ring_points(catch, previous, radius)
+    for point in points:
+        along = sum((point[k] - catch[k]) * axis[k] for k in range(3))
+        assert abs(along) < 1e-12, "ring points must lie in the plane across the axis"
+
+
+@pytest.mark.parametrize("axis", [(1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.5, -0.5, 0.7)])
+def test_the_ring_survives_an_arrival_along_any_axis(axis):
+    """The seed vector for the cross product has to dodge the axis it is
+    crossed with, or the ring collapses to a line."""
+    catch = [0.0, 0.0, 0.0]
+    previous = [-a for a in axis]
+    points, _ = ring_points(catch, previous, 0.135)
+    distances = [math.dist(p, catch) for p in points]
+    assert min(distances) == pytest.approx(0.135, abs=1e-9)
+
+
+def test_the_closeup_panel_is_scaled_to_the_ring_not_the_flight():
+    """The arc is about three metres and the ring is 0.27, so one extent cannot
+    serve both; at full extent the aperture is a smudge."""
+    source = TRACK_SRC.read_text()
+    assert "reach = ring_radius * 2.2" in source
+    fraction = 0.27 / (0.135 * 2.2 * 2)
+    assert fraction > 0.3, "the ring has to fill a useful part of the close-up"
+
+
+def test_the_predicted_landing_is_drawn_in_the_closeup():
+    """Without it the panel shows the ring and the truth but not the error."""
+    source = TRACK_SRC.read_text()
+    assert 'rows[catch_frame]["views"][index]' in source
+
+
+def test_axes_keep_equal_scale():
+    """A three metre arc squeezed into a box with unequal axes is a different
+    shape, and the fall would not look like a fall."""
+    assert "set_box_aspect((1, 1, 1))" in TRACK_SRC.read_text()
+
+
+def test_missing_matplotlib_does_not_break_the_other_outputs():
+    body = ast.unparse(_function(TRACK_SRC.read_text(), "plot_3d"))
+    assert "except ImportError" in body and "return None" in body
