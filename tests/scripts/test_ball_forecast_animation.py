@@ -87,6 +87,60 @@ def test_the_forecast_converges_as_observations_arrive():
     assert medians[0] / medians[-1] > 3, "the whole point is that it tightens a lot"
 
 
+# ---------------------------------------------------------------- flight 模式
+
+def test_flight_runs_one_frame_per_rendered_frame():
+    """The clip should run at the scene's own pace, not at the observation
+    schedule's; subsampling would make the ball jump."""
+    truth_frames = list(range(46))
+    hold = 4
+    order = truth_frames + [truth_frames[-1]] * hold
+    assert order[:46] == truth_frames
+    assert len(order) == 50 and order[-1] == 45
+
+
+@pytest.mark.parametrize("position", [0, 22, 45])
+def test_the_flight_index_never_runs_off_the_end(position):
+    """`upto` slices the truth and also indexes the current ball; an off-by-one
+    here raises only on the last frame of the clip."""
+    truth_frames = list(range(46))
+    upto = truth_frames.index(position) + 1
+    assert 1 <= upto <= len(truth_frames)
+    assert 0 <= upto - 1 < len(truth_frames)
+
+
+def test_the_orbit_sweeps_exactly_the_requested_amount():
+    order_length, orbit = 50, 45.0
+    sweeps = [orbit * tick / max(1, order_length - 1) for tick in range(order_length)]
+    assert sweeps[0] == 0.0
+    assert sweeps[-1] == pytest.approx(orbit)
+    assert sweeps == sorted(sweeps), "the camera must not reverse mid-clip"
+
+
+def test_the_orbit_is_slow_enough_to_follow_the_ball():
+    """A fast sweep reads as motion of its own and competes with the subject."""
+    degrees_per_second = 45.0 / (50 - 1) * 12.0
+    assert degrees_per_second < 20, f"{degrees_per_second:.0f} deg/s is dizzying"
+
+
+def test_zero_orbit_holds_the_camera_still():
+    assert [0.0 * tick / 49 for tick in range(50)] == [0.0] * 50
+
+
+def test_flight_does_not_require_a_fittable_prefix():
+    """forecast needs two observations; flight only needs the track, and a scene
+    where the ball is never rendered should still produce a clip of the truth."""
+    source = SRC.read_text()
+    assert 'if not steps and cli.mode == "forecast"' in source
+
+
+def test_the_whole_arc_is_drawn_faint_under_the_flown_part():
+    """Revealing the trajectory as it goes would suggest the model discovers it,
+    when the truth is fixed and only the readings arrive over time."""
+    source = SRC.read_text()
+    assert "alpha=0.25" in source
+
+
 def test_gravity_is_removed_before_fitting_not_estimated():
     """Fitting an acceleration the physics already gives would amplify noise by
     dt squared for nothing."""

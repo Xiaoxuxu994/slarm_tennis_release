@@ -1,5 +1,17 @@
 #!/usr/bin/env python
-"""Animate the forecast tightening as observations arrive, on the pixel path.
+"""Animate the ball track: the flight itself, or the forecast tightening.
+
+Two modes, because the still 3D plot cannot show either.
+
+  flight    the ball advancing through time, truth and each view's reading
+            appearing frame by frame, under a slow orbit so the arc reads as
+            three-dimensional rather than as a line on paper. This is the plot
+            put in motion.
+  forecast  at each observation, the ballistic fit through everything seen so
+            far, extended to the catch. Two observations give a guess and each
+            further one should pull it onto the truth; watching that is how you
+            tell a forecast that converges from one that was lucky.
+
 
 The still 3D plot shows where the ball went. It cannot show the thing the task
 actually turns on: with only the first two observations the landing is a guess,
@@ -94,14 +106,24 @@ def main() -> int:
     parser.add_argument("track", type=Path, help="the .csv written by export_ball_track.py")
     parser.add_argument("--output", type=Path, default=None,
                         help="default: <track>_forecast.mp4")
-    parser.add_argument("--fps", type=float, default=2.0,
-                        help="playback fps; one step per observation, so slow is right")
+    parser.add_argument("--mode", choices=("flight", "forecast"), default="flight",
+                        help="flight: the ball advancing through time under a slow "
+                             "orbit. forecast: the fit tightening as observations "
+                             "arrive, one step each")
+    parser.add_argument("--fps", type=float, default=None,
+                        help="playback fps; defaults to 12 for flight and 2 for "
+                             "forecast, which has only five steps")
+    parser.add_argument("--orbit", type=float, default=45.0,
+                        help="degrees of azimuth swept across a flight clip; 0 holds "
+                             "the camera still")
     parser.add_argument("--hold", type=int, default=4,
                         help="repeat the final step this many times, so the last "
                              "forecast is readable before the clip loops")
     parser.add_argument("--dpi", type=int, default=150)
     cli = parser.parse_args()
 
+    if cli.fps is None:
+        cli.fps = 12.0 if cli.mode == "flight" else 2.0
     if not cli.track.is_file():
         raise SystemExit(f"[FAIL] no such file: {cli.track}")
     meta_path = cli.track.with_suffix(".json")
@@ -112,7 +134,7 @@ def main() -> int:
             f"size would have to be guessed."
         )
     meta = json.loads(meta_path.read_text())
-    output = cli.output or cli.track.with_name(f"{cli.track.stem}_forecast.mp4")
+    output = cli.output or cli.track.with_name(f"{cli.track.stem}_{cli.mode}.mp4")
     if output.suffix.lower() not in (".mp4", ".gif"):
         parser.error("output must end in .mp4 or .gif")
 
@@ -126,6 +148,8 @@ def main() -> int:
         raise SystemExit(f"[FAIL] needs matplotlib, numpy and imageio: {exc}")
 
     readings, truth = read_track(cli.track)
+    views = list(meta.get("views") or [])
+    colours = ["#2E6389", "#B33D33", "#2B7A56"]
     step = float(meta["step_seconds"])
     catch = int(meta["catch_frame"])
     gravity = list(meta["gravity_rig"])
@@ -159,12 +183,14 @@ def main() -> int:
         steps.append({"last": last, "used": used, "pooled": np.array(pooled),
                       "arc": arc, "landing": arc[-1],
                       "error": float(np.linalg.norm(arc[-1] - catch_truth))})
-    if not steps:
+    if not steps and cli.mode == "forecast":
         raise SystemExit("[FAIL] fewer than two observation frames carry a ball reading")
 
     # One extent for every step, or the arc would appear to move when only the
     # axes did.
-    everything = np.concatenate([truth_points] + [s["arc"] for s in steps])
+    seen_points = [np.array(v, dtype=float) for v in readings.values() if v]
+    everything = np.concatenate([truth_points] + [s["arc"] for s in steps]
+                                + (seen_points if cli.mode == "flight" else []))
     centre = (everything.min(axis=0) + everything.max(axis=0)) / 2
     reach = max(float((everything.max(axis=0) - everything.min(axis=0)).max()) * 0.55, 0.2)
 
@@ -182,66 +208,114 @@ def main() -> int:
     writer_options = ({"duration": 1000.0 / cli.fps, "loop": 0}
                       if output.suffix.lower() == ".gif"
                       else {"fps": cli.fps, "codec": "libx264", "macro_block_size": 2})
-    order = list(range(len(steps))) + [len(steps) - 1] * max(0, cli.hold)
+
+    if cli.mode == "flight":
+        # One frame per rendered frame, so the clip runs at the scene's own pace.
+        order = truth_frames + [truth_frames[-1]] * max(0, cli.hold)
+    else:
+        order = list(range(len(steps))) + [len(steps) - 1] * max(0, cli.hold)
 
     with plt.rc_context({"font.size": 10}):
         with imageio.get_writer(output, **writer_options) as writer:
-            for position in order:
-                state = steps[position]
+            for tick, position in enumerate(order):
                 figure = plt.figure(figsize=(9, 6.4))
                 axes = figure.add_subplot(111, projection="3d")
 
-                axes.plot(*truth_points.T, color=TRUTH_COLOUR, linewidth=1.6,
-                          label="truth", zorder=2)
+                # The ring and the true landing are the fixed reference in both
+                # modes: everything else is what is known so far.
                 axes.plot(*ring.T, color=RING_COLOUR, linewidth=2.4,
                           label=f"catch ring {meta['ring_diameter_m'] * 100:.0f} cm", zorder=3)
                 axes.scatter(*catch_truth, marker="*", s=150, color=BALL_COLOUR,
                              edgecolors=TRUTH_COLOUR, linewidths=0.8, zorder=6,
                              label="true landing")
-                axes.scatter(*state["pooled"].T, s=26, color=RING_COLOUR, zorder=4,
-                             label=f"observations through f{state['last']}")
-                axes.plot(*state["arc"].T, color=PRED_COLOUR, linewidth=2.4, zorder=5,
-                          label="forecast")
-                axes.scatter(*state["landing"], marker="X", s=110, color=PRED_COLOUR,
-                             edgecolors=TRUTH_COLOUR, linewidths=0.8, zorder=7,
-                             label="predicted landing")
-                axes.plot(*np.stack([catch_truth, state["landing"]]).T,
-                          color=PRED_COLOUR, linestyle=":", linewidth=1.4, zorder=6)
+
+                if cli.mode == "flight":
+                    upto = truth_frames.index(position) + 1
+                    # Whole arc faint, the part already flown solid, so the clip
+                    # never looks like the trajectory itself is being discovered.
+                    axes.plot(*truth_points.T, color=TRUTH_COLOUR, linewidth=1.0,
+                              alpha=0.25, zorder=1)
+                    axes.plot(*truth_points[:upto].T, color=TRUTH_COLOUR,
+                              linewidth=2.0, label="truth", zorder=2)
+                    for index, view in enumerate(views):
+                        seen = np.array([readings[f][index] for f in truth_frames[:upto]
+                                         if len(readings.get(f, [])) > index], dtype=float)
+                        if len(seen):
+                            axes.scatter(seen[:, 0], seen[:, 1], seen[:, 2], s=16,
+                                         color=colours[index % len(colours)], alpha=0.85,
+                                         depthshade=False, zorder=4, label=view)
+                    axes.scatter(*truth_points[upto - 1], s=90, color=BALL_COLOUR,
+                                 edgecolors=TRUTH_COLOUR, linewidths=0.8, zorder=7)
+                    errors = [float(np.linalg.norm(np.mean(readings[position], axis=0)
+                                                   - truth_points[upto - 1]))] \
+                        if readings.get(position) else []
+                    heading = f"Frame {position} of {truth_frames[-1]}"
+                    detail = (f"ball error {errors[0] * 100:.1f} cm" if errors
+                              else "no ball rendered in any view")
+                else:
+                    state = steps[position]
+                    axes.plot(*truth_points.T, color=TRUTH_COLOUR, linewidth=1.6,
+                              label="truth", zorder=2)
+                    axes.scatter(*state["pooled"].T, s=26, color=RING_COLOUR, zorder=4,
+                                 label=f"observations through f{state['last']}")
+                    axes.plot(*state["arc"].T, color=PRED_COLOUR, linewidth=2.4, zorder=5,
+                              label="forecast")
+                    axes.scatter(*state["landing"], marker="X", s=110, color=PRED_COLOUR,
+                                 edgecolors=TRUTH_COLOUR, linewidths=0.8, zorder=7,
+                                 label="predicted landing")
+                    axes.plot(*np.stack([catch_truth, state["landing"]]).T,
+                              color=PRED_COLOUR, linestyle=":", linewidth=1.4, zorder=6)
+                    verdict = ("inside the ring" if state["error"] < tolerance
+                               else "outside")
+                    heading = (f"Forecast from {len(state['used'])} observations "
+                               f"(through frame {state['last']})")
+                    detail = (f"landing error {state['error'] * 100:.1f} cm -- {verdict} "
+                              f"(clears at {tolerance * 100:.2f} cm)")
 
                 axes.set_xlim(centre[0] - reach, centre[0] + reach)
                 axes.set_ylim(centre[1] - reach, centre[1] + reach)
                 axes.set_zlim(centre[2] - reach, centre[2] + reach)
                 axes.set_box_aspect((1, 1, 1))
-                axes.view_init(elev=16, azim=-62)
+                # A slow sweep reads as depth; a fast one just makes it hard to
+                # follow the ball, which is the point of the clip.
+                sweep = (cli.orbit * tick / max(1, len(order) - 1)
+                         if cli.mode == "flight" else 0.0)
+                axes.view_init(elev=16, azim=-62 + sweep)
                 axes.set_xlabel("x (m)"); axes.set_ylabel("y (m)"); axes.set_zlabel("z (m)")
                 axes.tick_params(labelsize=7)
                 axes.legend(loc="upper left", fontsize=8, frameon=False)
 
-                verdict = "inside the ring" if state["error"] < tolerance else "outside"
-                figure.suptitle(
-                    f"Forecast from {len(state['used'])} observations "
-                    f"(through frame {state['last']})", x=0.06, ha="left",
-                    fontsize=15, fontweight="semibold")
+                figure.suptitle(heading, x=0.06, ha="left", fontsize=15,
+                                fontweight="semibold")
                 figure.text(0.06, 0.905,
-                            f"scene {meta['scene']}   {meta['checkpoint']}   "
-                            f"landing error {state['error'] * 100:.1f} cm -- {verdict} "
-                            f"(clears at {tolerance * 100:.2f} cm)",
+                            f"scene {meta['scene']}   {meta['checkpoint']}   {detail}",
                             fontsize=10, color=TRUTH_COLOUR)
-                figure.text(0.06, 0.03,
-                            "Views pooled before the fit; the evaluator takes the worst "
-                            "view, so its error is larger than this.",
-                            fontsize=8, color="#6E756F")
+                if cli.mode == "forecast":
+                    figure.text(0.06, 0.03,
+                                "Views pooled before the fit; the evaluator takes the "
+                                "worst view, so its error is larger than this.",
+                                fontsize=8, color="#6E756F")
                 figure.tight_layout(rect=(0, 0.05, 1, 0.88))
                 figure.canvas.draw()
                 writer.append_data(np.asarray(figure.canvas.buffer_rgba())[..., :3].copy())
                 plt.close(figure)
 
     print(f"scene       : {meta['scene']}   {meta['checkpoint']}")
-    print(f"steps       : {len(steps)} observations, {len(order)} frames at {cli.fps:g} fps")
-    print(f"{'observations':<14}{'landing error':>15}{'':>3}{'verdict':<16}")
-    for state in steps:
-        verdict = "inside" if state["error"] < tolerance else "outside"
-        print(f"through f{state['last']:<6}{state['error'] * 100:>13.1f} cm   {verdict:<16}")
+    print(f"mode        : {cli.mode}, {len(order)} frames at {cli.fps:g} fps")
+    if cli.mode == "forecast":
+        print(f"{'observations':<14}{'landing error':>15}{'':>3}{'verdict':<16}")
+        for state in steps:
+            verdict = "inside" if state["error"] < tolerance else "outside"
+            print(f"through f{state['last']:<6}{state['error'] * 100:>13.1f} cm   "
+                  f"{verdict:<16}")
+    else:
+        missing = [f for f in truth_frames if not readings.get(f)]
+        print(f"frames      : {truth_frames[0]}..{truth_frames[-1]}, "
+              f"orbit {cli.orbit:g} degrees")
+        if missing:
+            print(f"no ball in  : {len(missing)} frames "
+                  f"({missing[0]}..{missing[-1]}) -- those tick past with the arc "
+                  f"advancing and no reading drawn")
     print(f"wrote       : {output}")
     return 0
 
