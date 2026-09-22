@@ -55,3 +55,4 @@ kernel_meta
 
 # Isolated implementation worktrees
 .worktrees/
+.DS_Store

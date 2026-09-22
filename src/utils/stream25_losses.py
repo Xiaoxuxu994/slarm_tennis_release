@@ -796,18 +796,24 @@ def compute_stream25_loss(
             (vel_pred.float() - vel_gt.float()).norm(dim=-1).mean().detach()
         )
         if output.get("ball_v15_residual") is not None:
-            from src.utils.ball_residual_diagnostics import residual_diagnostics, residual_regularization
+            from src.utils.ball_residual_diagnostics import (
+                residual_diagnostics, residual_regularization, velocity_unit_diagnostics,
+            )
             delta = output["ball_v15_residual"]
             loss_dict["stream25_ball_delta_v_loss"] = residual_regularization(
                 delta, weights.get("ball_delta_v", 0.0))
             diagnostics = residual_diagnostics(
                 output["ball_v15_base"], delta, vel_pred, vel_gt, pos_pred, pos_gt,
                 dt24=9 * _ts / 24, dt45=30 * _ts / 24)
+            diagnostics.update(velocity_unit_diagnostics(diagnostics, _vel_scale))
             for name, values in diagnostics.items():
                 loss_dict[f"stream25_residual_{name}"] = values.mean()
             for quantile, suffix in ((0.5, "median"), (0.95, "p95")):
                 loss_dict[f"stream25_residual_delta_{suffix}"] = torch.quantile(
                     diagnostics["delta_magnitude"], quantile)
+                loss_dict[f"stream25_residual_delta_{suffix}_mps"] = loss_dict[f"stream25_residual_delta_{suffix}"]
+                loss_dict[f"stream25_residual_delta_{suffix}_normalized"] = (
+                    loss_dict[f"stream25_residual_delta_{suffix}"] / _vel_scale)
 
         loss_dict.update(
             ball_trajectory_losses(

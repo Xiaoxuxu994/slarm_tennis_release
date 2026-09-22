@@ -267,8 +267,9 @@ def get_args_parser():
     parser.add_argument("--ball_token_freeze_backbone", action="store_true")
     parser.add_argument("--stream25_ball_vel_scale", type=float, default=None,
                         help="normalisation scale for the ball velocity loss, in m/s. "
-                             "Leave unset to derive it as pos_scale/dt, which weights the "
-                             "two ball terms by their actual effect on the landing point. "
+                             "Both physical prediction and GT are divided by this scale "
+                             "inside SmoothL1 only; it never scales decoder outputs. "
+                             "Unset/0 derives pos_scale/(t24-t15), not the frame45 horizon. "
                              "Set 1.0 to reproduce runs from before 2026-08-31.")
     parser.add_argument("--use_ball_token_intrunk", action="store_true",
                         help="ball token as an aggregator special token (like sky/affine), "

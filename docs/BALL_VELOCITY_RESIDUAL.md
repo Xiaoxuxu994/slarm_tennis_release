@@ -95,6 +95,31 @@ entry point). Keep the manifest identical across experiments.
 
 ## Diagnostics
 
+### Velocity Scale Contract
+
+`stream25_ball_vel_scale` is ONLY the denominator in
+`weight * smooth_l1_loss(v_final / scale, v_gt / scale)` (mean reduction,
+beta=1). Both decoder outputs and GT remain physical rig-frame m/s. It is not
+a decoder gain or a multiplier applied to delta before addition. Changing the
+scale changes both loss strength and the physical SmoothL1 transition, so it
+is not equivalent to a constant weight globally. The independent multiplier
+is `stream25_ball_vel_weight`. Unset/0 preserves the historical default
+`0.1 / (t24-t15)`, about 0.333 m/s for timespan=0.8. No config value is changed
+by this semantics audit. Pixel MS3 uses its own independent scale.
+
+`v_final = detach(v_base) + delta_v` is performed in m/s. Trajectory and landing
+integrate physical velocities with seconds and gravity; residual regularization
+is in (m/s)^2. None uses the velocity loss scale to decode or integrate states.
+
+Training and main evaluation now retain existing diagnostics and add explicit
+`*_mps` / `*_normalized` aliases for base, delta, final, GT, target correction,
+velocity errors and magnitudes. Normalized means division by the effective
+velocity loss scale, dimensionless, not a new network output convention.
+Training logs the effective `stream25_ball_vel_scale`; evaluation records
+`velocity_loss_scale_mps`. Use the checkpoint's original training config to
+reproduce its normalized diagnostic values. Physical predictions are independent
+of this config value when evaluating the same checkpoint.
+
 Training `stream25_residual_*` logs signed base/delta/final/GT vectors, target
 correction, absolute delta axes, magnitude, cosine/validity, base/final velocity
 error, analytic frame24/45 errors and hit rates at 0.1196m. Training median/p95
