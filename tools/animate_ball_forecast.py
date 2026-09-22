@@ -18,11 +18,8 @@ actually turns on: with only the first two observations the landing is a guess,
 and each further observation should pull it onto the truth. Watching that
 happen is how you tell a forecast that converges from one that was lucky.
 
-There is an existing animation of this for the ball token
-(tools/ball_token_viz_plot.render_trajectory_animation), which reads
-ball_prefix_states. The pixel-path models have no ball token, so on every
-current checkpoint it has nothing to read. This is the same idea driven by the
-quantity the pixel path does produce: the rendered ball centre.
+The quantity being animated is the rendered ball centre -- the only ball
+state the pixel path produces. There is no ball token to read, by design.
 
 It runs on the CSV that tools/export_ball_track.py writes, not on a model, so
 the animation can be rebuilt on a laptop and re-timed without spending a GPU

@@ -4,9 +4,8 @@
 **收敛**：两个观测时落点是猜的，每多一个观测应该把它拉向真值。所以这份测试的
 核心不是画得好不好，而是那条拟合对不对、以及误差确实随观测数下降。
 
-已有的 ball-token 动画（tools/ball_token_viz_plot.render_trajectory_animation）
-读的是 ball_prefix_states，而当前所有像素路径 ckpt 都没有 ball token，所以它在
-新模型上读不到东西。这份是同一个想法换成像素路径真正产出的量：渲染球心。
+动画读的是像素路径真正产出的量：渲染球心。像素路径没有 ball token，
+也不需要有。
 
     pytest tests/scripts/test_ball_forecast_animation.py -q
 """

@@ -1,7 +1,7 @@
 """关键指标提取与报表。
 
-被 scripts/eval_stream25_base.py（单次 eval 摘要表）和 tools/compare_eval.py
-（两次实验对比表）复用。只依赖标准库；阈值表按需延迟 import，避免拉起 torch。
+被 scripts/eval_stream25_base.py（单次 eval 摘要表）和 tools/compare_evaluations.py
+（跨 ckpt 对比表）复用。只依赖标准库；阈值表按需延迟 import，避免拉起 torch。
 
 metrics 结构约定（= evaluation.json 的顶层 "metrics"，即 aggregate scope）：
   metrics[<scalar>][<bucket>]                 e.g. rgb_psnr / semantic_miou / ball_iou / rgb_psnr_p10 / depth_absrel

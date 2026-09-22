@@ -16,136 +16,23 @@ set -euo pipefail
 #   核实某次实验实际用了几张：
 #       grep "Global batch size" work_dirs/slarm/<exp_name>/logs/log.txt
 GPUS="${GPUS:-0,1,2,3}"
-CONFIG="${CONFIG:-configs/exp0910_004_balltoken_temporal_joint.yml}"
-# 默认：004 联合微调，直接运行 bash run_sh/train.sh。
-# 起点是已训练 ball-token 的 exp0908_003/ckpt_007999.pth；使用 load_from，
-# 不恢复旧 optimizer/步数，也不需要先跑 002 B 或 003 C。
-# 四卡、batch 1/卡、4000 steps；head LR 1e-5、trunk LR 1e-6。
-# 先在训练机核对旧权重：
-#   SLARM_SINGLE_PROCESS=1 python tools/check_model_init.py --config configs/exp0910_004_balltoken_temporal_joint.yml
-# 换四张卡：GPUS=4,5,6,7 bash run_sh/train.sh
-# 备用消融：CONFIG=configs/exp0910_005_balltoken_prefix_only.yml bash run_sh/train.sh
-# 权重位置不同：bash run_sh/train.sh --load_from /path/to/ckpt_007999.pth
-# 完整说明：docs/BALL_TEMPORAL_JOINT_FINETUNE.md
-# CONFIG="configs/slarm_stream25_24cm_triview_window6.yaml"
+CONFIG="${CONFIG:-configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml}"
+# 默认：0908_10k 像素路径微调。起点是 exp0908_001/ckpt_019999.pth（config 里的
+# load_from），不恢复旧 optimizer/步数。
+#
+# 开跑前核对权重确实加载上了（strict=False 会静默丢弃不匹配的 key）：
+#   SLARM_SINGLE_PROCESS=1 python tools/check_model_init.py --config "${CONFIG}"
+# 换卡：GPUS=4,5,6,7 bash run_sh/train.sh
+# 换权重：bash run_sh/train.sh --load_from /path/to/ckpt.pth
 
 # 断点续训：改成 1，其他什么都不用动（CONFIG/GPUS 保持和中断那次一致即可）。
 # ckpt 目录由 output_dir/project/exp_name 推出来，会自动挑最新的一个接着跑，
 # 权重/optimizer/loss_scaler/迭代数/采样器进度全部恢复，config 里的 load_from 会被忽略。
 RESUME="${RESUME:-0}"
 
-# ---- 6.5cm 实验组（起点统一为 exp0825_002 的 ckpt_039999）----
-#
-# 基线（8/27 退火之后，exp0827_003 的 ckpt_005999）：pos15 0.0235 / p95 0.0428 / f24 0.0246。
-# 在此之前 stage1 是 constant LR 跑到底，pos15 在 0.031~0.111 之间摆动 3.5×，没有收敛点；
-# 补 6k 步 cosine（1e-4 → 1e-6）之后落定，median 改善 33%、p95 改善 50%。
-#
-# ★ 由此得到的通用教训：constant LR 跑到底的训练，末点 ckpt 只是盆地里的一次采样。
-#   此后每一组训练都该带 LR 衰减，不只是 backbone —— ball token 那种新模块同样适用。
-#
-# 另已知：误差 95.5% 在深度方向，语义选球不是瓶颈（pred≈gt mask）。细节见各 config 抬头。
-#
-# ── v3_0829 数据（新 domain，不带 ball token）──
-# 起点是退火终点。★ 开跑前 config 抬头列了三件必须先做完的数据侧工作
-#   （scene_list 格式 / 可见性筛选 / 速度标注），config 填好不等于能跑。
-# CONFIG="configs/exp0901_001_slarm_stream25_v3_0829_triview_window6_nolseg_finetune.yml"
-# 原生分辨率版（480 宽 x 640 高）。patch 数 4 倍、global attention 约 16 倍，
-# 已把 render chunk 降到 2、步数减到 12k；显存还不够就把 chunk 降到 1。
-# CONFIG="configs/exp0901_002_slarm_stream25_v3_0829_native_triview_window6_nolseg_finetune.yml"
-#
-# ── 0902_fixed 冒烟测试（9/03，真实场景 GS 渲染，50 场景）──
-# 不是要出结论的实验。看的只有"训练 loss 降不降"：45 个场景跑 89 遍还记不住，
-# 就是管线有问题（路径 / 内参 / 可见性 / 坐标系），不是数据少。
-# 验证集只有 5 个场景，它的指标是噪声，别拿去和任何基线比。
-# ★ 开跑前四步见 config 抬头：make_scene_list -> register_dataset --dataset
-#   -> check_dataset_contract -> check_model_init。裸数据树没有 scene_list，
-#   不建的话 dataloader 第一行就失败。
-# ★ load_from 里填的是退火终点 ckpt_005999，若你指的是别的 ckpt 先改掉。
-# CONFIG="configs/exp0903_001_slarm_stream25_0902fixed_triview_window6_nolseg_smoke.yml"
-#
-# ── 0903_2k 全量微调（9/08，房间场景 GS 渲染，2k 量级，四卡）──
-# 0902_fixed 冒烟那批的全量版本，同一套渲染管线。冒烟阶段留下的待定项已判定：
-#   深度是干净的 z-buffer（球面偏置实测 -0.0210 m vs 前表面理论 -(2/3)r = -0.0217 m），
-#   所以 stream25_depth_relative_weight 维持 1.00，不用降到 0.50。
-# lower_front 从 frame 16 起被接球网兜挡住 —— 真机构如此，不是数据缺陷，别让数据侧
-# 把网删掉去"修"它；后果是外推锚点 frame 15 之后只剩纯水平基线。
-# 接球帧 45，标注里的 first_contact_frame=30 和新增的 catch_plane_x_rig 都指向 frame 29-30，
-# 是同一个错误换个轴写了两遍（那一帧球在离地 3.77 m，相机 rig 才 1.5 m 高）。
-# CONFIG="configs/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu.yml"
-#
-# ── ball token 重启（9/08，起点是上面那组的终点 ckpt_019999）──
-# 下游要一个可靠的球状态向量，所以走 in-trunk（外挂版是 post-hoc probe，
-# 改变不了 backbone 算什么，slarm.py:1641）。
-#
-# 诊断：ball_vel 的归一化尺度 vel_scale = pos_scale / dt 里 dt 取 0.3 s
-# （frame 15 -> 24），而目标在接球帧 frame 45，dt = 1.0 s —— 速度被降权 3.33 倍。
-# 实测 v15 误差 0.4116 m/s x 1.005 s = 41.4 cm vs frame45 中位 43.9 cm，
-# 速度单独解释 94%。
-#
-# ★ 2026-09-09：只跑 B 组。ckpt_019999 的实测把 ball token 的精度理由推翻了
-#   （GT 掩码与预测掩码结果几乎相同 -> 选球零成本；phys≈free -> 外推不是瓶颈；
-#    像素法 frame45 10.81 cm 已在 11.96 cm 容差内）。它现在的目的是给下游一个
-#   紧凑的球状态向量。判据：balltoken frame24 与像素法 0.052 比，
-#   ~0.052 收工 / >0.08 放弃 / <0.04 才回头跑 A 组归因。
-#   开跑前先 pytest tests/utils/test_ball_trajectory_losses.py
-# CONFIG="configs/exp0908_003_slarm_stream25_0903_2k_balltoken_intrunk_landing.yml"
-#   A 组（条件实验，默认不跑）：一行常数 stream25_ball_vel_scale: 0.1
-# CONFIG="configs/exp0908_002_slarm_stream25_0903_2k_balltoken_intrunk_velscale.yml"
-#
-# ── 视图数消融（9/02，6.5cm 数据）──
-# 两份 config 逐键相同，只差 num_max_cameras 2 vs 3。必须成对跑：
-# 拿双视图去比 ckpt_005999 本身是错的（那个差里混了"多训 8k 步"这个变量）。
-# 三视图 ckpt 能直接 load_from：全网络只有 aggregator.affine_token 随相机数变形状，
-# misc.py 按相机名 index_select 取 [front_left, front_right] 两行。
-# ★ 是 load_from 不是 resume，别用 --auto_resume 去接退火那个 run。
-# 数据已核对：2000 场景双视图 0 全盲，两组同一份 scene_list，不需要剔场景。
-#
-# ★ 先只跑双视图这一组也可以，但结论是单向的：
-#   拿它比已发布的三视图基线（ckpt_005999: pos15 0.0235 / f24 0.0246），
-#   差里混着"多训 20k 步"，而那 20k 步只会帮双视图、不会害它。
-#   所以「明显更差」是可信结论，「打平或更好」不是 —— 后者要补 exp0902_002。
-# CONFIG="configs/exp0902_001_slarm_stream25_6.5cm_stereo_window6_nolseg.yml"
-# 三视图对照，只在上面那组打平/更好时才需要跑
-# CONFIG="configs/exp0902_002_slarm_stream25_6.5cm_triview_window6_nolseg_control.yml"
-#
-# ── in-trunk ball token（8/29）──
-# ball token 改成 aggregator 的 special token（和 sky token 同等地位），走完全部
-# attention 层。回答 A/B 回答不了的问题：球的位置信息是 backbone 学不到，
-# 还是从来没人要求它学。从退火 ckpt 续训，不用重训 40k。
-# CONFIG="configs/exp0829_001_slarm_stream25_6.5cm_triview_window6_nolseg_balltoken_intrunk.yml"
-# 外挂版对照：与上面逐键相同，只差两个开关。两组之差 = token 位置之差，没有别的解释。
-# 单跑 in-trunk 回答不了"位置有没有用" —— 它和之前的 A/B 差了四个变量。
-# CONFIG="configs/exp0829_002_slarm_stream25_6.5cm_triview_window6_nolseg_balltoken_external.yml"
-#
-# ── catch45 场景微调（新数据）──
-# 起点是退火终点，目前最好的 backbone。开跑前先做 config 抬头列的三项核对 + zero-shot 评测。
-# CONFIG="configs/exp0828_003_slarm_stream25_catch45_triview_window6_nolseg_finetune.yml"
-#
-# ── ball token A/B（8/28，起点统一为退火终点 exp0827_003 的 ckpt_005999）──
-# A 组已在 029999 上判负（frame24 0.087 vs 像素法 0.038），下面两组优先级低
-# A 组：冻结 backbone，只训 ball token —— 在一个**已经很好**的 backbone 上还有没有增量
-# CONFIG="configs/exp0828_001_slarm_stream25_6.5cm_triview_window6_nolseg_balltoken_frozen_anneal.yml"
-# B 组：放开 backbone 端到端 —— 收敛的 backbone 会不会为球定位离开当前极小值
-#      深度是 backbone 的活，A 组若只小赢，希望就在这组；盯 rgb/depth/semantic 别塌
-# CONFIG="configs/exp0828_002_slarm_stream25_6.5cm_triview_window6_nolseg_balltoken_e2e_anneal.yml"
-#
-# ── 已完成 / 已作废 ──
-# 退火（已跑完，结论见下）：6k 步 cosine，pos15 0.0312 → 0.0235，p95 0.0863 → 0.0428
-# CONFIG="configs/exp0827_003_slarm_stream25_6.5cm_triview_window6_nolseg_anneal.yml"
-# 下面两组起点是 stage1 的 029999（已被退火终点取代），且 lr_sched 是 constant
-# （正是把 stage1 弄抖的配置）。exp0827_001 可留着跑完当对照，exp0827_002 建议停掉。
-# CONFIG="configs/exp0827_001_slarm_stream25_6.5cm_triview_window6_nolseg_balltoken_frozen.yml"
-# CONFIG="configs/exp0827_002_slarm_stream25_6.5cm_triview_window6_nolseg_balltoken_e2e.yml"
-#
-# 三组互相无依赖，可并行；3 组 × 2 卡的排法：
-#   退火 GPUS="0,1"   A 组 GPUS="2,3"   B 组 GPUS="4,5"
-#
-# ★ 卡数会改变全局 batch：batch_size 是 per-GPU，全局 = batch_size × world_size，
-#   代码里没有梯度累积，而且 lr 已在 config 里写死、不会随卡数自动缩放。
-#   stage1 若是 4 卡跑的（train.sh 的 GPUS 自 8/19 起一直是 "4,5,6,7"），
-#   改成 2 卡就等于全局 batch 减半、每样本步长翻倍。开跑前核对一下：
-#       grep "Global batch size" work_dirs/slarm/exp0825_002_*/logs/log.txt
-#   影响最大的是退火那组（见其 config 抬头）；A 组冻结基本不受影响。
+# ★ constant LR 跑到底的训练，末点 ckpt 只是盆地里的一次采样 —— exp0827_003 补了
+#   6k 步 cosine（1e-4 → 1e-6）之后，pos15 median 改善 33%、p95 改善 50%。
+#   此后每一组训练都带 LR 衰减。
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 DEVICE_NUM=$(awk -F',' '{print NF}' <<< "${GPUS}")

@@ -27,10 +27,6 @@ import os
 import sys
 import time
 import argparse
-import itertools
-import json
-import math
-from pathlib import Path
 
 import torch
 
@@ -45,10 +41,6 @@ from tools.stream25_runtime import (
     slice_stream_observation,
 )
 from src.models.stream_session import StreamSession
-from tools.ball_fusion_report import build_fusion_report, print_fusion_report
-from tools.ball_position_readout_report import (
-    position_readout_scene, build_position_readout_report, print_position_readout_report,
-)
 from src.utils.stream25_metrics import (
     transform_position,
     transform_vector,
@@ -278,42 +270,7 @@ def main():
                     help="球半径（米）。默认读 config 的 stream25_ball_radius（0.0325）")
     ap.add_argument("--ball-mask-source", choices=["pred", "gt", "both"], default="both",
                     help="球区域来源：pred(预测语义==1) / gt(GT ball_ms3_mask) / both(对照)")
-    ap.add_argument("--fusion-ablation", action="store_true",
-                    help="Compare per-view, mean and ray-weighted terminal states; no retraining")
-    ap.add_argument("--fusion-position-ratio", type=float, default=3.0,
-                    help="Assumed along/transverse position noise ratio, in [1,100]")
-    ap.add_argument("--fusion-velocity-ratio", type=float, default=1.0,
-                    help="Independent velocity noise ratio; default 1 = mean velocity")
-    ap.add_argument("--hit-threshold", type=float, default=0.1196,
-                    help="Strict landing error threshold in metres")
-    ap.add_argument("--fusion-output", type=Path,
-                    help="New JSON file for paired fusion results (never overwritten)")
-    ap.add_argument("--ball-position-readout-ablation", action="store_true",
-                    help="A: compare H_pos(mean(z)) with mean(H_pos(z_view)); pooled velocity unchanged")
-    ap.add_argument("--ball-position-readout-output", type=Path,
-                    help="New JSON file for ablation A, including paired scene errors")
     args_cli = ap.parse_args()
-    if args_cli.ball_position_readout_output and not args_cli.ball_position_readout_ablation:
-        ap.error("--ball-position-readout-output requires --ball-position-readout-ablation")
-    if args_cli.ball_position_readout_ablation:
-        if not math.isfinite(args_cli.hit_threshold) or args_cli.hit_threshold <= 0:
-            ap.error("--hit-threshold must be finite and positive")
-        path = args_cli.ball_position_readout_output
-        if path and (path.exists() or not path.parent.is_dir()):
-            ap.error("Readout output must be a new file in an existing directory")
-    if args_cli.fusion_output and not args_cli.fusion_ablation:
-        ap.error("--fusion-output requires --fusion-ablation")
-    if args_cli.fusion_ablation:
-        for ratio in (args_cli.fusion_position_ratio, args_cli.fusion_velocity_ratio):
-            if not math.isfinite(ratio) or not 1 <= ratio <= 100:
-                ap.error("Fusion ratios must be finite and in [1,100]")
-        if not math.isfinite(args_cli.hit_threshold) or args_cli.hit_threshold <= 0:
-            ap.error("--hit-threshold must be finite and positive")
-        if args_cli.fusion_output:
-            if args_cli.fusion_output.exists():
-                ap.error("Fusion output already exists; choose a new path")
-            if not args_cli.fusion_output.parent.is_dir():
-                ap.error("Fusion output parent directory must exist")
 
     gravity = torch.tensor([float(x) for x in args_cli.gravity.split(",")], dtype=torch.float32)
     device = torch.device("cuda")
@@ -321,16 +278,6 @@ def main():
 
     args = load_stream25_args(args_cli.config, checkpoint_path=args_cli.checkpoint,
                               checkpoint_role="evaluation")
-    if args_cli.ball_position_readout_ablation:
-        if (not getattr(args, "use_ball_token_intrunk", False) or getattr(args, "use_ball_token", False)
-                or getattr(args, "ball_pos_supervision", "pooled") != "per_view"):
-            ap.error("A requires the checkpoint's original per_view in-trunk config (e.g. 004); not C/per_view_cross")
-        # Reject an old baseline checkpoint mislabeled with the 004 config.
-        from scripts.visualize_ball_tokens import validate_checkpoint_behavior
-        checkpoint = torch.load(args_cli.checkpoint, map_location="cpu", weights_only=False)
-        validate_checkpoint_behavior(checkpoint, args)
-        del checkpoint
-
     # 球半径补偿。★ 必须在 args 解析出来之后 —— 这里读的是 config。
     #   （同一个位置踩过一次 UnboundLocalError，见 commit 0bd7515。）
     ball_radius = args_cli.ball_radius
@@ -384,7 +331,6 @@ def main():
 
     per_scene = []          # 每场景：(per_eye_states, gt_pos24, gt_pos15, gt_v15, dt, ball_state, targets)
     gt_accel_samples = []   # GT 球加速度(rig) 采样，用于核对重力
-    readout_scenes = []
 
     for index in range(n):
         t0 = time.time()
@@ -447,12 +393,6 @@ def main():
             else (scene["ball_pos15"], scene["ball_v15"])
         )
         per_scene.append((scene_states, gt_pos24, gt_pos15, gt_v15, dt, ball_state, targets))
-        if args_cli.ball_position_readout_ablation:
-            readout_scenes.append(position_readout_scene(
-                scene["ball_pos15"], scene["ball_pos15_per_view"], scene["ball_v15"],
-                {15: (gt_pos15, 0.0), **targets}, gravity, scene_index=index,
-                scene_name=str(input_dict.get("scene_name", [index])[0]),
-            ))
 
         del input_dict, target_dict, prepared, scene
         print(
@@ -465,36 +405,7 @@ def main():
         g_mean = torch.stack(gt_accel_samples).mean(dim=0)
         print(f"\n[check] GT ball accel(rig) mean = {g_mean.tolist()}  (should be ~= gravity; use to verify --gravity)")
 
-    if args_cli.ball_position_readout_ablation:
-        report = build_position_readout_report(readout_scenes, threshold=args_cli.hit_threshold)
-        report.update(config=args_cli.config, checkpoint=args_cli.checkpoint, split=args_cli.split,
-                      gravity_rig=gravity.tolist(), target_frames=sorted({15, *target_frames}))
-        print_position_readout_report(report)
-        if args_cli.ball_position_readout_output:
-            with args_cli.ball_position_readout_output.open("x", encoding="utf-8") as handle:
-                json.dump(report, handle, indent=2, allow_nan=False)
-                handle.write("\n")
-            print(f"Ball position readout results: {args_cli.ball_position_readout_output}")
-
     sources = [s for s in ("pred", "gt") if per_scene and s in per_scene[0][0]]
-    if args_cli.fusion_ablation:
-        report = build_fusion_report(
-            per_scene, sources, gravity,
-            position_ratio=args_cli.fusion_position_ratio,
-            velocity_ratio=args_cli.fusion_velocity_ratio,
-            threshold=args_cli.hit_threshold,
-        )
-        report.update({"config": args_cli.config, "checkpoint": args_cli.checkpoint,
-                       "split": args_cli.split, "gravity_rig": gravity.tolist(),
-                       "ball_surface_offset_m": ball_surface_offset,
-                       "catch_frame": catch_frame, "target_frames": target_frames})
-        print_fusion_report(report)
-        if args_cli.fusion_output:
-            with args_cli.fusion_output.open("x", encoding="utf-8") as handle:
-                json.dump(report, handle, indent=2, allow_nan=False)
-                handle.write("\n")
-            print(f"Fusion results: {args_cli.fusion_output}")
-
     # ① pos15 起点误差（frame24 的"地板"：外推再准也超不过它）
     print("\n" + "=" * 72)
     print(f"{'region':8s} {'metric':16s} {'median':>10s} {'p95':>10s} {'n_valid':>8s}")
