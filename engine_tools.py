@@ -74,7 +74,7 @@ def build_model(args):
             use_render_novel_view=args.use_render_novel_view,
             add_angular_velocity=args.add_angular_velocity,
             # target_feat_types=args.load_feat_types.split(',') if args.load_feat_types else [],
-            with_feat=False,  # woLSeg: 不预测/监督 LSeg 特征
+            with_feat=False,  # woLSeg: LSeg features neither predicted nor supervised
             similarity_probs_threshold=args.similarity_probs_threshold,
             mode=args.mode,
             )
@@ -93,11 +93,10 @@ def visualize(args, model, dset_train, step, train_vis_id, device,
         if vis_id is None or dataset is None:  # sometimes there is no validation set
             continue
 
-        # sample_id 只是"第几次可视化"的编号，rank 之间错开 80 以免撞车；
-        # 它不能直接当场景下标用 —— 数据集小于这个数就 IndexError，而且要等到
-        # vis_every_n_iters 那一步才炸，前面几千步的训练全部白跑。
-        # 之前的数据集都有 200+ 场景所以没暴露；50 个场景分三个 split 之后，
-        # validation 只剩几个，rank0 的 sample7 就已经越界。
+        # sample_id counts visualizations and is spaced 80 apart between ranks; it
+        # is NOT a scene index. Using it as one raises IndexError on a small split,
+        # and only at the first vis_every_n_iters step, throwing away the training
+        # done before it.
         sample_id = global_rank * 80 + vis_id
         scene_id = sample_id % len(dataset)
         out_pth = (f"{args.video_dir}/step{step}-rank{global_rank}"

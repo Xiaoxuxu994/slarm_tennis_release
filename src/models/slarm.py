@@ -48,12 +48,12 @@ from .temporal_ownership import (
 from tools.export_ply import save_ply, RGB2SH
 from src.dataset.constants import SEMANTIC_LABEL_LIST, SEMANTIC_ID_TO_COLOR
 
-#: 四类 task semantic 在导出 ply 时的配色（RGB，0..1）。类别 1 是球 —— 评测里
-#: 的球掩码就是 `semantic == 1`（eval_stream25_base.py:562），所以给它一个
-#: 在灰色房间里绝对跳出来的颜色，肉眼找球不用调图层。
+#: Colours for the four task-semantic classes when exporting ply (RGB, 0..1).
+#: Class 1 is the ball -- the evaluator's ball mask is exactly `semantic == 1` --
+#: so it gets a colour that cannot be mistaken for the grey room.
 TASK_SEMANTIC_PLY_COLORS = (
-    (0.25, 0.25, 0.28),   # 0 背景
-    (1.00, 0.00, 0.80),   # 1 球
+    (0.25, 0.25, 0.28),   # 0 background
+    (1.00, 0.00, 0.80),   # 1 ball
     (0.00, 0.75, 0.75),   # 2
     (1.00, 0.65, 0.00),   # 3
 )
@@ -99,24 +99,16 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
         decoder_type="dummy",
         # depth
         #
-        # ★ depth_act_fn = near + sigmoid(x) * (far - near)，:495。
-        #   它不是显示用的量程，是**高斯位置**：:850 拿它乘射线方向得到 means。
+        # depth = near + sigmoid(x) * (far - near). This is not a display range:
+        # it IS the gaussian position, multiplied by the ray direction to get means.
         #
-        #   far=400 远大于室内场景（接球数据实测 max 25.6 m），数据只占 sigmoid
-        #   输出的 6.3%。这不是纯粹的浪费 —— sigmoid 尾部 σ(x)≈e^x，于是
-        #       d(depth)/dx = (far-near)·σ(1-σ) ≈ depth - near
-        #   灵敏度只跟深度本身有关、与 far 无关，等价于一个对数深度参数化，
-        #   而那正是深度回归该用的参数化。近场（球所在的 1~5 m）几乎无损失。
-        #   代价只在远端：18 m 处对 logit 噪声的灵敏度是贴合量程的 2.4 倍，
-        #   25.6 m 处 6.3 倍。那里是背景墙面，不是球。
+        # far=400 dwarfs an indoor scene, but that is not waste. In the sigmoid
+        # tail d(depth)/dx is approximately depth - near, so sensitivity depends on
+        # the depth itself and not on far -- a log-depth parameterisation, which is
+        # what depth regression wants.
         #
-        #   另一个代价是初始化：x=0 时预测 200 m，是场景中位深度的 29 倍，
-        #   从零训练要先把 logit 压到 -4 才进入正确量级。从 ckpt 微调不受影响。
-        #
-        # ★ 改这两个数会让所有已有 ckpt 失效：同一份权重解码出的深度完全不同
-        #   （logit -4 在 far=400 下是 6.84 m，在 far=30 下是 0.73 m，几何直接塌）。
-        #   真要迁移，近似补偿是给深度输出层 bias 加 ln((far_old-near)/(far_new-near))，
-        #   尾部成立、远端会偏 —— 那是独立的一次实验，别混进别的对比里。
+        # Changing either number invalidates every existing checkpoint: the same
+        # weights decode to a completely different depth.
         near=0.2,
         far=400,
         # model config
@@ -159,7 +151,7 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
         num_motion_tokens=0,
         tau=0.5,
         projected_motion_dim=32,
-        with_feat=False,  # woLSeg variant: 默认关闭 LSeg 特征
+        with_feat=False,  # woLSeg variant: LSeg features off
         # target_feat_types=[],  # pe3r, lseg
         # gs activation
         gs_marbles=False,
@@ -184,8 +176,8 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
         sigmoid_ms3_min=0.0,
         sigmoid_ms3_max=100,  # 2.0
         ms3_clamp=0.0001,
-        # 物理先验硬固化开关（消融用）：开启后，动态高斯(球)的 a=canonical重力、j=0 并 detach，
-        # 网络不再学 a/j，只学 velocity；关闭(默认)时完全保持原行为。
+        # Ablation: pin the ball's MS3 acceleration to gravity and its jerk to zero,
+        # detached, so the network learns velocity only. Off leaves behaviour unchanged.
         ms3_physics_override=False,
         # stream
         mode="full", #  default use full attention
@@ -950,39 +942,36 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
         return output_dict
 
     def _apply_physics_ms3_override(self, forward_ms3, data_dict):
-        """物理先验硬固化（消融开关 ms3_physics_override）。
+        """Replace learned MS3 acceleration with gravity and zero the jerk.
 
-        把「动态」高斯(球)的 MS3 acceleration 替换成 canonical 系重力、jerk 置零；静态高斯 a/j 置零。
-        两者都 detach —— 网络不再学 a/j，只学 velocity。判动静沿用速度阈值
-        terminal_dynamic_velocity_threshold（与 classify_terminal_dynamic 一致：‖v‖ >= 阈值 视为动态）。
-        重力取 rig 系 [0,0,-9.81]（= stream25.MS3_GRAVITY_RIG），按每个 context 帧的 canonical_to_rig
-        旋到 canonical 系（渲染器在 canonical 系驱动高斯位置，与 GT dense_ms3 同系）。
-
-        forward_ms3: [b, t, v, h, w, C]，前 ms3_deg*3 为平动 v/a/j，其后为 omega（若有）。
-        仅在 ms3_deg==3（含 jerk 通道）时适用。
+        Dynamic gaussians (the ball) get gravity rotated into the canonical frame,
+        static ones get zero; both are detached, so only velocity keeps a gradient.
+        Dynamic means ||v|| >= terminal_dynamic_velocity_threshold, matching
+        classify_terminal_dynamic. forward_ms3 is [b,t,v,h,w,C] with the first
+        ms3_deg*3 channels holding v/a/j.
         """
-        assert self.ms3_deg == 3, "ms3_physics_override 目前假设 ms3_deg==3（v/a/j 各3通道）"
+        assert self.ms3_deg == 3, "ms3_physics_override assumes ms3_deg == 3 (v/a/j)"
         if "context_canonical_to_rig" not in data_dict:
             raise KeyError(
-                "ms3_physics_override 需要 data_dict['context_canonical_to_rig'] 把重力旋到 canonical 系"
+                "ms3_physics_override needs context_canonical_to_rig to rotate gravity"
             )
         vel = forward_ms3[..., 0:3]
-        # 动静判据：速度模长 >= 阈值 视为动态(球)，与 classify_terminal_dynamic 保持一致
+        # Dynamic iff ||v|| >= threshold, as in classify_terminal_dynamic.
         is_dynamic = vel.norm(dim=-1, keepdim=True) >= self.terminal_dynamic_velocity_threshold
 
-        # rig 系重力 → canonical 系（逐 context 帧的 4x4）
+        # Gravity from the rig frame into canonical, per context frame.
         c2r = data_dict["context_canonical_to_rig"].to(forward_ms3.dtype)     # [b, t, 4, 4]
         rig_to_canonical = c2r[..., :3, :3].transpose(-1, -2)                 # [b, t, 3, 3]
         gravity_rig = forward_ms3.new_tensor([0.0, 0.0, -9.81])               # MS3_GRAVITY_RIG
         gravity_canonical = torch.einsum("btij,j->bti", rig_to_canonical, gravity_rig)  # [b, t, 3]
-        gravity_canonical = gravity_canonical[:, :, None, None, None, :]      # [b,t,1,1,1,3] 广播到 v/h/w
+        gravity_canonical = gravity_canonical[:, :, None, None, None, :]      # [b,t,1,1,1,3], broadcast over v/h/w
 
         accel = torch.where(is_dynamic, gravity_canonical, torch.zeros_like(vel)).detach()
         jerk = torch.zeros_like(vel).detach()
 
-        parts = [vel, accel, jerk]                       # velocity 保留网络梯度
+        parts = [vel, accel, jerk]                       # velocity keeps its gradient
         if forward_ms3.shape[-1] > self.ms3_deg * 3:
-            parts.append(forward_ms3[..., self.ms3_deg * 3:])  # omega 通道原样保留(带梯度)
+            parts.append(forward_ms3[..., self.ms3_deg * 3:])  # omega unchanged
         return torch.cat(parts, dim=-1)
 
     def forward_renderer(self, gs_params, data_dict, feats=None, task_semantic=None, render_motion_seg=not is_ascend_npu(),
@@ -1039,7 +1028,8 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
                 quats_batched = quaternion_multiply(quats_batched, quats_offset_batched)
         else:
             if self.ms3_physics_override:
-                # 源头覆盖：主驱动(下面)与 terminal 外推(forward_ms3_flat)都会取到 override 后的 a/j
+                # Override at the source, so both the main drive and the terminal
+                # extrapolation below read the overridden a/j.
                 gs_params["forward_ms3"] = self._apply_physics_ms3_override(
                     gs_params["forward_ms3"], data_dict
                 )
@@ -1335,7 +1325,7 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
                 packed=False,
                 radius_clip=radius_clip,
             )
-        # v2: feat 通道已移除,直接按 RGB(+flow)+depth 拆分
+        # v2: the feat channel is gone; split straight into RGB(+flow)+depth
         if not self.training:
             color, forward_flow, depth = rendered_color.split([self.gs_dim, 3, 1], dim=-1)
         else:
@@ -1386,7 +1376,7 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
         else:
             output_dict["rendered_alpha"] = None
 
-        # feat 单独渲染已移除。task_semantic 与 MS3 分开渲染(未合并)。
+        # Separate feat rendering is gone; task_semantic and MS3 render separately.
         if task_semantic_batched is not None:
             with torch.autocast("cuda", enabled=False):
                 rendered_task_semantic_color, _, _ = self.rasterization_func(
@@ -1519,8 +1509,8 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
             others_last_tokens = last_tokens[:, :, :self.patch_start_idx]  # Exclude patch token
 
             sky_token, affine_tokens, motion_tokens, time_tokens = None, None, None, None
-            # 切片顺序必须与 aggregator 的 concat 顺序倒序一致：
-            # concat 是 ... affine, sky, patch，所以从尾巴切是 sky -> affine。
+            # Slice in reverse of the aggregator's concat order: it appends
+            # ... affine, sky, patch, so from the tail it is sky then affine.
             if self.use_sky_token:
                 sky_token = others_last_tokens[:, :, -1:]
                 sky_token = self.sky_token_norm(sky_token)  # NOTE: token need LayerNorm
@@ -1942,11 +1932,11 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
         b, t, v, c, h, w = input_image.shape
         assert b == 1
         _, tgt_t, _, _ = render_results['gs_means'].shape  # [(b tgt_t), (t v h w), c]
-        # ★ target_frame_idx 是 [b, tgt_t * v]（每个帧号按相机重复 v 次），不是
-        #   [b, tgt_t]。以前直接用 t_idx 去索引它，文件名就变成了 t_idx // v：
-        #   只产出 ceil(tgt_t/v) 个不同的名字，每个还被三个**不同**目标帧先后
-        #   覆盖，活下来的是最后一个。文件名和内容对不上，而且不报错。
-        #   normalize_frame_indices 正是为这个布局写的，顺带校验各视角同步。
+        # target_frame_idx is [b, tgt_t * v] -- each frame number repeated once per
+        # camera -- not [b, tgt_t]. Indexing it with t_idx produced ceil(tgt_t/v)
+        # distinct filenames, each overwritten by three different target frames, so
+        # names and contents disagreed with no error. normalize_frame_indices
+        # handles this layout and checks the views are synchronised.
         from src.utils.frame_indices import normalize_frame_indices
         target_frame_idxs = normalize_frame_indices(
             data_dict['target_frame_idx'], batch_size=b, num_timesteps=tgt_t,
@@ -2007,16 +1997,15 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
             gaussians_ply_format[:, :, 3:6] = color
             save_ply(gaussians_ply_format, os.path.join(save_path, f'gs_rgb_{target_frame_idxs[t_idx]}.ply'))
 
-            # gs: task semantic。原来的语义导出藏在下面的 `if self.with_feat:` 里，
-            # 而 woLSeg 变体把 with_feat 硬编码成 False 且立刻 raise，所以那条路
-            # 从来没执行过。这条走的是**活着的**四类 task semantic 头的输入标注。
+            # Semantic ply export. The old one sat inside `if self.with_feat:`,
+            # which the woLSeg variant pins to False, so it never ran; this reads
+            # the four-class task-semantic head that is actually live.
             #
-            # 不需要重采样：高斯是逐 context 像素的，展平顺序就是 (t v h w)，
-            # 和 context_task_semantic 的布局逐元素对齐，每个高斯直接取自己那个
-            # 源像素的类别。
+            # No resampling: gaussians are per context pixel and flatten as
+            # (t v h w), element-for-element with context_task_semantic.
             #
-            # save_ply 把 color 当成 SH 直流项（写出时做 SH2RGB），所以这里先
-            # RGB2SH 反变换一次，导出的颜色才正是调色板里的那个颜色。
+            # save_ply treats color as the SH DC term and applies SH2RGB on write,
+            # so invert that here to export the palette colour exactly.
             task_semantic = data_dict.get('context_task_semantic')
             if task_semantic is not None:
                 if tuple(task_semantic.shape) != (b, t, v, h, w):

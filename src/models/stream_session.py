@@ -16,9 +16,9 @@ class StreamSession:
         self.camera_head_kv_cache_depth = self.model.camera_head.trunk_depth if self.model.camera_head is not None else 0
         self.camera_head_iterations = 4 if self.model.camera_head is not None else 0
         self.window_size = window_size
-        # 冻结契约的**形状**（六次、步长 3、递增）。绝对帧号由第一次观测确定 ——
-        # 见 _validate_observation：评测可以把整个窗口后移（--context-offset），
-        # 那时到达的是 (3,6,...,18) 或 (9,12,...,24)，形状不变、只是整体平移。
+        # The frozen contract's SHAPE: six observations, stride 3, increasing. The
+        # absolute numbers come from the first observation, since evaluation may
+        # slide the whole window later (--context-offset).
         self.expected_context_frames = (
             (0, 3, 6, 9, 12, 15)
             if (
@@ -125,7 +125,7 @@ class StreamSession:
         self.camera_head_kv_cache_list = [[[None, None] for _ in range(self.camera_head_kv_cache_depth)] for _ in range(self.camera_head_iterations)] if self.model.camera_head is not None else None
         self.num_streamed_observations = 0
         self.streamed_context = {}
-        # 由本场景第一次观测确定，clear() 之后重新确定。
+        # Fixed by this scene's first observation; re-derived after clear().
         self.context_frame_offset = None
 
     def _append_streamed_context(self, input_dict):

@@ -1,5 +1,5 @@
-# PEP 604（`str | os.PathLike`）在本文件的函数签名里用了，但 3.9 上那是 def 时求值，
-# 会 TypeError。同目录的 stream25_losses / stream25_metrics 都带这行，这里补齐。
+# PEP 604 unions appear in signatures below; on 3.9 those are evaluated at def
+# time and raise TypeError without this import.
 from __future__ import annotations
 
 import collections.abc

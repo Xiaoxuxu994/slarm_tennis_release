@@ -55,9 +55,9 @@ def make_video(
         assert dataset is not None
         if scene_id is None:
             scene_id = np.random.randint(0, len(dataset))
-        # 调用方传进来的 scene_id 可能是可视化序号而不是场景下标（见 engine_tools），
-        # 这里回绕一次 —— 否则越界只在 vis_every_n_iters 那一步暴露，
-        # 而那时前面几千步已经跑完、ckpt 还没存（visualize 在 checkpoint 之前）。
+        # scene_id may be a visualization counter rather than a scene index, so wrap
+        # it; otherwise the overflow only shows at the first vis step, after
+        # thousands of iterations and before any checkpoint was written.
         scene_id = int(scene_id) % len(dataset)
         data_dict = dataset.__getitem__(scene_id, np.random.randint(10, 100), return_all=True)
         data_dict = to_batch_tensor(data_dict)
@@ -106,10 +106,9 @@ def make_video(
         # x = (x * std + mean).clamp(0.0, 1.0)  # NOTE: rgb normalization
         return rearrange(x, "t v h w c -> t v c h w")
 
-    # 深度色标量程按本段 GT 定一次，整段视频、GT 与 Pred 共用。
-    # 模块级 depth_visualizer 写死的是 lo=4/hi=120（驾驶数据集口径）——
-    # 接球场景 4 m 以内会全部饱和成红色，而球正好在那个区间。
-    # 拿不到 GT 深度时退回原行为，不改变其他数据集的输出。
+    # One depth range per clip, from its GT, shared by GT and Pred. The module-level
+    # visualizer is fixed at lo=4/hi=120 for driving data, which saturates
+    # everything within 4 m -- exactly where the ball is.
     _gt_depth_samples = target_dict.get("target_depth")
     if _gt_depth_samples is None:
         _gt_depth_samples = input_dict.get("context_depth")
@@ -637,7 +636,7 @@ def make_clean_video(
     B, context_t, context_v, _, H, W = input_dict["context_image"].shape
     _, target_t, target_v, _, H_tgt, W_tgt = target_dict["target_image"].shape
 
-    # 同 make_video：按本段 GT 深度定一次量程，GT/Pred/整段视频共用。
+    # As in make_video: one range from this clip's GT, shared everywhere.
     _gt_depth_samples = target_dict.get("target_depth")
     depth_vis = make_depth_visualizer(
         _gt_depth_samples.detach().cpu().numpy()

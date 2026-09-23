@@ -11,28 +11,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
-# 三视图是历史默认，也是所有已发布 gate 报告的口径 —— 这两个名字保持不变，
-# 冻结的验收表和现有测试都按它们比对。
-CAMERA_ORDER: Tuple[str, ...] = (
-    "front_left",
-    "front_right",
-    "lower_front",
-)
-REQUIRED_EVAL_SCOPES: Tuple[str, ...] = ("aggregate",) + CAMERA_ORDER
-
-DEFAULT_CAMERA_ORDER: Tuple[str, ...] = CAMERA_ORDER
-
-# ── 运行期的相机名单 ─────────────────────────────────────────────
+# Tri-view is the historical default and the basis of every published gate
+# report, so these two names stay as they are for the frozen acceptance table.
 #
-# 双视图（num_max_cameras: 2）训练出来的模型渲染出的 view 轴只有 2，而
-# 评测脚本按名字给每个 view 单独出 gate 报告，名单写死就会在
-# eval_stream25_base.py 的 num_views 校验处直接 raise。
-#
-# 所以名单改成运行期可设：评测入口从 config 解出 camera_list[num_max_cameras]
-# 调 set_camera_order()，其余代码一律走 get_camera_order() /
-# get_required_eval_scopes()，不要再读上面那两个常量。
-#
-# ★ 不设就是三视图，行为与改动前逐字节相同。
+# The list is settable at run time because a two-view model renders a view axis of
+# length 2, while the evaluator reports a gate per named view; a hardcoded list
+# raises at the num_views check. The evaluation entry point resolves
+# camera_list[num_max_cameras] from the config and calls set_camera_order(); every
+# other caller should use get_camera_order() / get_required_eval_scopes().
+# Unset means tri-view, byte for byte as before.
 _ACTIVE_CAMERA_ORDER: Tuple[str, ...] = DEFAULT_CAMERA_ORDER
 
 
@@ -238,46 +225,34 @@ def integrate_frame24_position_physics(
     return pos15 + v15 * dt + 0.5 * gravity_rig * dt ** 2
 
 
-# 球心 vs 球前表面：像素路径的一个系统偏置。
+# Ball centre versus ball near surface: a systematic bias on the pixel path.
 #
-# 深度图是 z-buffer，记录第一个不透明面，所以把球掩码处的深度反投影得到的是球的
-# **前表面**；而 ball_trajectory 的 position_rig 是仿真器给的**球心**。两边口径
-# 不同，差值恒定朝向相机，方向恰好是误差里占 95.5% 的深度方向。
+# The depth map is a z-buffer recording the first opaque surface, so unprojecting
+# the ball mask gives the ball's NEAR SURFACE, while ball_trajectory's
+# position_rig is the simulator's ball CENTRE. The gap is constant and points at
+# the camera -- the same direction that carries 95.5% of the error.
 #
-# 系数取多少取决于在球面上怎么池化：
-#     1.000  只取最近点（球心投影处那一个像素）
-#     0.707  圆盘中位数  -r/sqrt(2)
-#     0.667  圆盘平均值  -(2/3)r
-#     0.646  ★ 实测（0902_fixed，球语义掩码上取 median 的深度 vs 解析球心距离，
-#            中位数 -0.0210 m / r=0.0325 m）——与 eval 的池化口径完全一致，
-#            所以默认用它，而不是任何一个理论值。
-#     0.000  关闭（历史口径）
-# 三个理论值把实测夹在中间，说明偏置的来源是清楚的：掩码里混了球边缘的像素，
-# 那里 sqrt(r^2 - rho^2) 小，把中位数往下拉。
+# The coefficient depends on how the sphere is pooled:
+#     1.000  nearest point only
+#     0.707  disc median,  -r/sqrt(2)
+#     0.667  disc mean,    -(2/3)r
+#     0.646  measured on 0903_2k, matching the evaluator's own median pooling
+#     0.000  off
 #
-# ★★ 2026-09-09 实测结论：默认保持关闭，中位数上没有收益。★★
+# Measured 2026-09-09 and left OFF by default: it buys nothing at the median.
+# Over 100 scenes, compensation 21.0 mm:
 #
-# 在 0903_2k ckpt_019999 / 100 场景上开关各跑一次（verify_physics_extrapolation）：
+#                    off       on        delta   of compensation
+#     pred along_med  0.0304  0.0292     -1.2mm        6%
+#     pred along_p95  0.0947  0.0803    -14.4mm       69%
+#     gt   along_med  0.0327  0.0277     -5.0mm       24%
+#     gt   along_p95  0.1135  0.0925    -21.0mm      100%
 #
-#                    off       on     Δ      占补偿 21.0 mm
-#     pred along_med  0.0304  0.0292  -1.2mm       6%
-#     pred along_p95  0.0947  0.0803 -14.4mm      69%
-#     gt   along_med  0.0327  0.0277  -5.0mm      24%
-#     gt   along_p95  0.1135  0.0925 -21.0mm     100%
-#
-# **只有尾部像"前表面偏置"，中位数不像。** gt 的 p95 恰好改善了整个补偿量，
-# 说明最差的那些场景里预测确实落在球前表面；但中位场景的渲染深度本来就在球心
-# 附近，再推 2.1 cm 等于推过头。
-#
-# 机制（未证实）：GT 的 .tif 是干净的 z-buffer，这一点是量过的（球掩码 median
-# 深度 vs 解析球心距离 = -0.0210 m，对上 -(2/3)r = -0.0217 m）。但**模型渲染出来
-# 的深度不是 z-buffer** —— 3DGS 给的是 alpha 加权期望深度 D = sum(d_i a_i T_i)，
-# 而球只有 2.66 px、全是边缘像素，渲染值会被身后的背景往远处拉，越过球心。
-# 当初把"GT 深度图是 z-buffer"直接当成"模型渲染也是 z-buffer"，是两件事。
-#
-# 另注：开关之间 lat_med 也动了 0.6 mm，虽然补偿纯粹沿视线。原因是 _pos15_error /
-# _pos15_decompose 取的是"总误差最大的那个视图"，补偿会改变谁最差。所以毫米级的
-# 对比并不是严格受控的。
+# Only the tail behaves like a near-surface bias. The GT .tif is a clean z-buffer,
+# but the MODEL's rendered depth is not: 3DGS returns an alpha-weighted expected
+# depth, and the ball is 2.66 px of nothing but edge pixels, so the background
+# behind it drags the value past the centre. Assuming the render was a z-buffer
+# because the GT is one was the mistake.
 #
 BALL_SURFACE_COEFFICIENT_MEASURED = 0.646
 BALL_SURFACE_COEFFICIENT_DISC_MEAN = 2.0 / 3.0
@@ -289,16 +264,16 @@ def apply_ball_surface_offset(
     directions: torch.Tensor,
     offset_meters: float,
 ) -> torch.Tensor:
-    """把反投影得到的球前表面点沿视线推到球心。
+    """Push an unprojected near-surface point along the ray to the ball centre.
 
-    ★ ``directions`` 必须归一化后再用：embedders.py:197 的 ``dirs`` 是**未归一化**的
-      （相机系 z 分量恒为 1，配合平面 z-depth 用），``viewdirs`` 才是单位向量。
-      直接乘 ``dirs`` 会把补偿量放大 ``||dirs||`` 倍（画面角落可达 1.3 倍）。
+    ``directions`` is normalised here because ``dirs`` from embedders.py is NOT a
+    unit vector (its camera-frame z is 1, to pair with planar z-depth). Using it
+    raw scales the offset by ||dirs||, up to 1.3x in the corners of the image.
 
     Args:
-        positions: ``[..., 3]`` 反投影得到的表面点。
-        directions: ``[..., 3]`` 同形状的光线方向，可未归一化。
-        offset_meters: 沿视线**远离相机**推进的米数，即 ``coefficient * radius``。
+        positions: ``[..., 3]`` unprojected surface points.
+        directions: ``[..., 3]`` ray directions, need not be normalised.
+        offset_meters: metres to move away from the camera, ``coefficient * radius``.
     """
     if not offset_meters:
         return positions

@@ -20,15 +20,14 @@ DEFAULT_TRANSITIONS = (15, 6, 4, 11, 13, 6)
 logger = logging.getLogger("PerceptualModel")
 turbo_cmap = cm.get_cmap("turbo")
 
-# ★ lo=4.0 / hi=120 是给驾驶数据集（waymo / nuscenes / b2d / argoverse2）定的量程。
-#   保留原值，那几套数据仍然按这个口径出图。
+# lo=4.0 / hi=120 is the range for driving datasets, kept so their output is
+# unchanged.
 #
-#   但它对室内小场景是错的：接球数据实测 p2/p50/p98 = 0.23 / 6.84 / 18.01 m，
-#   而 -log 曲线在 lo=4 处就已经饱和 —— 4 m 以内（正好是球所在的区间）
-#   全部压成同一个红色，看不出任何深度结构；远景 6.8~25.6 m 又只用掉
-#   orange->green 不到半条色带。分辨率全花在了不关心的地方。
+# It is wrong for a small indoor scene: catching data runs 0.23 / 6.84 / 18.01 m
+# at p2/p50/p98, and the curve already saturates at 4 m, flattening the region the
+# ball occupies into one colour.
 #
-#   需要按数据定量程时用 make_depth_visualizer()，不要改这里。
+# Use make_depth_visualizer() for a data-driven range instead of editing this.
 depth_visualizer = lambda frame, opacity: visualize_depth(
     frame,
     opacity,
@@ -81,9 +80,8 @@ def make_depth_visualizer(depth_samples=None, lo=None, hi=None):
         lo, hi = resolved
 
     def _vis(frame, opacity):
-        # log 曲线：这些场景跨度约 80:1，线性映射会把 1~5 m 的球区挤进色带底部
-        # 五分之一。深度误差本来也是相对量（2 m 处差 10 cm 和 18 m 处差 10 cm
-        # 不是一回事），log 才是诚实的刻度。
+        # Log curve: these scenes span about 80:1, so a linear map squeezes the
+        # ball's 1-5 m into the bottom fifth. Depth error is relative anyway.
         return visualize_depth(
             frame, opacity, lo=lo, hi=hi,
             depth_curve_fn=lambda x: np.log(np.maximum(x, 1e-3) + 1e-6),

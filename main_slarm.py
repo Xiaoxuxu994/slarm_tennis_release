@@ -263,8 +263,8 @@ def get_args_parser():
     parser.add_argument("--stream25_ms3_ball_weight", type=float, default=1.00)
     parser.add_argument("--stream25_ms3_static_weight", type=float, default=0.25)
     parser.add_argument("--stream25_opacity_weight", type=float, default=0.10)
-    # 球半径（米）。只被评测侧的球心补偿用到（eval / verify 的
-    # --ball-radius-compensation），训练损失不读它。6.5cm 球 -> 0.0325；24cm 那批要改。
+    # Ball radius in metres. Only the evaluation-side centre compensation reads it;
+    # the training losses do not. 6.5 cm ball -> 0.0325.
     parser.add_argument("--stream25_ball_radius", type=float, default=0.0325)
     # MS3 physical normalization scales (spec 6.2) and the terminal dynamic split (spec 5.2).
     parser.add_argument("--stream25_ms3_velocity_scale", type=float, default=5.0)
@@ -302,11 +302,10 @@ def get_args_parser():
         type=str,
         default=None,
                         )
-    # 球被接住的帧号。轨迹在这一帧之后不再是自由抛体，所以任何超过它的外推
-    # 都没有物理意义 —— 评测工具用它来划定「外推到哪里还算数」的边界。
-    # ★ 不要从标注 JSON 的 first_contact_frame 读：0902_fixed 那个字段是用
-    #   frame 15 而不是出手帧做对称回落算的，整整差了 15 帧（声明 30，实为 45）。
-    # 0 = 未知，此时评测不外推到 24 之后。
+    # Frame at which the ball is caught. Past it the trajectory is no longer free
+    # flight, so extrapolating further means nothing. Do NOT read it from the
+    # annotation's first_contact_frame: on 0902_fixed that field is off by 15
+    # frames. 0 means unknown, and evaluation then stops at 24.
     parser.add_argument("--stream25_catch_frame", type=int, default=0,
                         help="frame at which the ball is caught; extrapolation past "
                              "it is physically meaningless (0 = unknown)")
@@ -319,10 +318,9 @@ def get_args_parser():
     parser.add_argument("--eval_batch_size", type=int, default=1)
     parser.add_argument("--input_size", default=(160, 240), type=int, nargs=2)
     parser.add_argument("--num_max_cameras", type=int, default=3)
-    # 深度激活的量程：depth = near + sigmoid(x) * (far - near)，决定高斯位置。
-    # ★ 默认值 0.2 / 400 是全部已有 ckpt 的口径，改了它们立刻失效
-    #   （同一份权重解码出的深度完全不同）。只在从零训练、或做专门的
-    #   量程消融时才动，别和其他对比混在一起。
+    # depth = near + sigmoid(x) * (far - near), which sets the gaussian position.
+    # 0.2 / 400 is what every existing checkpoint was trained with; changing it
+    # invalidates them all, since the same weights decode to a different depth.
     parser.add_argument("--depth_near", type=float, default=0.2,
                         help="lower bound of the depth activation, metres "
                              "(changing this invalidates existing checkpoints)")
@@ -636,7 +634,7 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=False,
-        # num_workers=0 时 persistent_workers=True 会 ValueError，而单步调试必须用 0
+        # persistent_workers=True raises when num_workers is 0, which debugging needs
         persistent_workers=args.num_workers > 0,
         drop_last=True,
     )

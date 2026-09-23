@@ -1,7 +1,7 @@
 """Streaming reconstruction inference with a configurable render horizon."""
 import math, os, sys, torch, numpy as np, imageio
 os.environ.setdefault("FEAT_DIST", "1")
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root on sys.path (脚本位于 scripts/)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root on sys.path
 
 from src.dataset.datasets import Stream25Dataset
 from src.dataset.data_utils import to_batch_tensor, prepare_inputs_and_targets
@@ -264,7 +264,7 @@ def depth_display_range(gt_stats, pred_stats, pad=0.05):
     if hi - lo < 1e-3:
         lo, hi = lo - 0.5, hi + 0.5
     margin = (hi - lo) * pad
-    # 深度没有负值，下界减到 0 以下只会白白吃掉一段色带
+    # Depth is never negative, so a lower bound below 0 wastes part of the ramp
     return max(lo - margin, 0.0), hi + margin
 
 
@@ -464,8 +464,8 @@ def main():
         if pred_t != extra.num_frames:
             pass
 
-        # 色标量程按场景算一次，整段视频和 GT/Pred 两行共用：
-        # 逐帧自适应会让视频闪烁，GT 与 Pred 各自适应则两行不可比。
+        # One colour range per scene, shared by the whole clip and by both rows:
+        # per-frame ranges flicker, and separate GT/Pred ranges are not comparable.
         gt_stats = depth_stats(gt_depth) if gt_t > 0 else None
         pred_stats = depth_stats(rendered_depth)
         if extra.depth_min is not None and extra.depth_max is not None:

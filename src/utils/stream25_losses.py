@@ -20,7 +20,7 @@ STREAM25_LOSS_WEIGHTS: Dict[str, float] = {
     "depth_relative": 1.00,
     "ball_depth_metric": 0.02,
     "semantic": 1.00,
-    "lseg_feature": 0.0,  # woLSeg: LSeg 特征不监督
+    "lseg_feature": 0.0,  # woLSeg: LSeg features unsupervised
     "ms3_ball": 1.00,
     "ms3_static": 0.25,
     "opacity": 0.10,
@@ -500,9 +500,6 @@ _TRUNK_PREFIXES = (
     "aggregated_last_tokens_norm",
 )
 
-# in-trunk ball token 物理上住在 aggregator 里，前缀会命中 "aggregator."，
-# 但它是随机初始化的新模块，用 trunk_lr（head 的 1/5 ~ 1/10）根本学不起来。
-# 按"新模块"的性质归到 head 组，与 ball_token_norm / ball_head_intrunk 同一档 LR。
 _TRUNK_EXCEPTIONS = (
     "aggregator.ball_token",
 )
