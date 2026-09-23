@@ -16,8 +16,8 @@ set -euo pipefail
 #   核实某次实验实际用了几张：
 #       grep "Global batch size" output/<exp_name>/logs/log.txt
 GPUS="${GPUS:-0,1,2,3}"
-CONFIG="${CONFIG:-configs/ball_training.yml}"
-# 默认：0908_10k 像素路径微调，输出到 output/ball_training/。
+CONFIG="${CONFIG:-configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml}"
+# 默认：0908_10k 像素路径微调，输出到 output/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/。
 # 起点是 config 里 load_from 指向的 ckpt_019999.pth，不恢复旧 optimizer/步数。
 #
 # 开跑前核对权重确实加载上了（strict=False 会静默丢弃不匹配的 key）：

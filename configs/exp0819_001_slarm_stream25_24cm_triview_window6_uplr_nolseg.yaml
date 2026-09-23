@@ -82,4 +82,4 @@ num_vis_samples: 1
 eval_every_n_iters: 50000
 keep_n_ckpts: 20
 project: slarm
-exp_name: ball_backbone_24cm
+exp_name: exp0819_001_slarm_stream25_24cm_triview_window6_uplr_nolseg

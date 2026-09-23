@@ -132,11 +132,11 @@ configs/               实验 YAML
 
 | 文件 | 用途 |
 |---|---|
-| `configs/ball_base_template.yml` | 三目 base 模板 |
-| `configs/ball_backbone_anneal.yml` | backbone（cosine 退火终点） |
-| `configs/ball_pretrain_2k.yml` | 2k 数据前置训练，`ball_training` 的起点 |
-| `configs/ball_training.yml` | **当前主线**：10k 数据像素路径微调 |
-| `configs/ball_eval_on_train.yml` | 泛化性对照：同一权重在训练场景上评 |
+| `configs/slarm_stream25_24cm_triview_window6.yaml` | 三目 base 模板 |
+| `configs/exp0827_003_slarm_stream25_6.5cm_triview_window6_nolseg_anneal.yml` | backbone（cosine 退火终点） |
+| `configs/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu.yml` | 2k 数据前置训练，`exp0915_001` 的起点 |
+| `configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml` | **当前主线**：10k 数据像素路径微调 |
+| `configs/exp0908_001_eval_on_train_scenes.yml` | 泛化性对照：同一权重在训练场景上评 |
 | `run_sh/train.sh` | 训练启动（单/多卡自动） |
 | `run_sh/eval.sh` | 评估启动（输出路径自动） |
 | `src/models/slarm.py` | 主模型（Gaussian / MS3 / terminal 外推） |
@@ -233,7 +233,7 @@ python tools/inspect_trajectory.py --data-root data/slarm_data
 这是它的盲点，所以 ④ 才要逐帧看。③ 装了 `opencv-python` 会额外校验语义图与可见性
 标注是否一致，值得装。
 
-四步都通过之后，把 config 里的四个字段指向它。`configs/ball_training.yml` 用的是：
+四步都通过之后，把 config 里的四个字段指向它。当前主线 config `exp0915_001` 用的是：
 
 ```yaml
 dataset: [ball_catch_triview_0908_10k]
@@ -251,7 +251,7 @@ eval_annotation: scene_list/ball_catch_triview_0908_10k_validation.txt
 bash run_sh/train.sh
 ```
 
-默认：4 卡、`configs/ball_training.yml`，从 config 里 `load_from` 指向的 `ckpt_019999.pth`
+默认：4 卡、`configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml`，从 config 里 `load_from` 指向的 `ckpt_019999.pth`
 初始化。改卡数或 config 用环境变量，不必编辑脚本：
 
 ```bash
@@ -266,13 +266,13 @@ bash run_sh/train.sh --num_iterations 30000         # 额外参数透传给 main
 
 ```bash
 SLARM_SINGLE_PROCESS=1 python tools/check_model_init.py \
-    --config configs/ball_training.yml
+    --config configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml
 ```
 
 输出全部落在 `output/<exp_name>/`，由 config 的 `exp_name` 决定：
 
 ```text
-output/ball_training/
+output/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/
   checkpoints/ckpt_*.pth
   logs/log.txt
   tensorboard/
@@ -281,10 +281,16 @@ output/ball_training/
 
 换到别处用 `bash run_sh/train.sh --output_dir /abs/path`。
 
-> **关于 `work_dirs/`**：配置和输出目录是这次整改才改名的，改名之前训出来的权重仍在
-> `work_dirs/slarm/exp09xx_.../checkpoints/` 下，没有搬动。所以各 config 的 `load_from`
-> 仍指向那些历史路径 —— 权重确实在那里。新训练一律写到 `output/<exp_name>/`，
-> 两套目录并存，各自都对。等历史权重不再需要时，把 `work_dirs/` 整个删掉即可。
+> **关于 `work_dirs/`**：输出根目录是这次整改才从 `work_dirs/slarm/` 改成 `output/` 的，
+> `exp_name` 没动，所以新旧两条路径只差一个根。已经训好的权重仍在
+> `work_dirs/slarm/<exp_name>/checkpoints/`，没有搬动 —— 各 config 的 `load_from`
+> 指向那里是对的。想统一就把旧目录搬过去：
+>
+> ```bash
+> mkdir -p output && mv work_dirs/slarm/* output/
+> ```
+>
+> 搬完之后把各 config 里 `load_from` 的 `work_dirs/slarm/` 前缀改成 `output/`。
 
 ### 8.1 卡数是实验口径的一部分
 
@@ -324,7 +330,7 @@ ckpt 对照表），然后：
 
 ```bash
 bash run_sh/eval.sh
-python tools/report_catch.py output/stream25_eval/ball_training/ --markdown
+python tools/report_catch.py output/stream25_eval/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/ --markdown
 ```
 
 第二条把整个 ckpt 扫描读成一张表：frame24 与接球点的落点误差（中位／p90／p95）和成功率。
@@ -364,13 +370,13 @@ bash run_sh/render.sh
 
 # 从 evaluation.json 里挑场景：落点最准 + 球重建最好
 python tools/pick_scenes.py \
-    output/stream25_eval/ball_training/<ckpt名>/evaluation.json
+    output/stream25_eval/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/<ckpt名>/evaluation.json
 
 # 导出球轨迹（.csv/.json/.html/_3d.png）。--scene 给逗号列表时一次模型加载跑多个场景，
 # 文件名带 _scene0003 后缀；单场景时就用 --output 给的名字。
 python tools/export_ball_track.py \
-    --config configs/ball_training.yml \
-    --checkpoint output/ball_training/checkpoints/ckpt_019999.pth \
+    --config configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml \
+    --checkpoint output/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_019999.pth \
     --scene 3 --output output_vis/track
 
 # 轨迹动画（只读 csv，不用 GPU，可在笔记本上重排版）

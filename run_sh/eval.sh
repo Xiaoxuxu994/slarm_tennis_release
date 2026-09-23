@@ -5,7 +5,7 @@ set -euo pipefail
 # 切换实验 / 权重时不会互相覆盖。
 
 GPUS="0"
-CONFIG="configs/ball_training.yml"
+CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
 
 # CKPTS 可以是多个路径，也可以写通配符 —— 会按名字排序后逐个评测，
 # 每个 ckpt 有自己的输出目录（互不覆盖），最后自动打印一张跨 ckpt 的对照表。
@@ -15,15 +15,15 @@ CONFIG="configs/ball_training.yml"
 #   那个差距也可能只是"训练侧是 batch 均值、验证侧是场景中位数"的口径差。
 #
 # 例：扫一整个实验的全部 ckpt
-#   CKPTS=("output/ball_pretrain_2k/checkpoints/ckpt_*.pth")
+#   CKPTS=("output/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu/checkpoints/ckpt_*.pth")
 CKPTS=(
-    # 这里默认指向新路径 output/。改名之前训出来的权重在
-    #   work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/
-    # 要评那一批，把下面的路径换过去即可 —— 两处都存在，各自都对。
+    # 输出根目录已从 work_dirs/slarm/ 改为 output/，exp_name 不变。这次改动之前
+    # 训出来的权重仍在 work_dirs/slarm/<exp_name>/checkpoints/，没有搬动；要评那
+    # 一批，把下面这行的 output/ 换成 work_dirs/slarm/ 即可。
     # 通配符会展开成全部 ckpt，按名字排序逐个评测，最后自动出对照表。
     # ★ 速度指标可能在训练中途见底后回升（exp0910_004 就是最早那个 ckpt 最好），
     #   所以末点不一定是最优点，要横着看。
-    "output/ball_training/checkpoints/ckpt_*.pth"
+    "output/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_*.pth"
 )
 
 # 观测窗口的偏移量，跑几个就写几个。每个 offset 有独立的输出目录，不会互相覆盖。

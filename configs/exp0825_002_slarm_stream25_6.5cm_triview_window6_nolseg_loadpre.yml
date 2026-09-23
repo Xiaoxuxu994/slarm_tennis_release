@@ -75,9 +75,12 @@ batch_size: 1
 seed: 20260826
 
 # ★ 从 exp004(exp0819_001) ckpt_039999 继续训（复用 ball_catch backbone；尺度靠续训重学）
-# load_from 指向的是 work_dirs/ 下的**历史**路径，不是上面 exp_name 的新路径。
-# 权重确实存在那里：这些目录是改名之前的训练留下的，没有搬动。新训练写到
-# output/<exp_name>/，两者并存，各自都对。
+# load_from 的根目录是 work_dirs/，不是新的 output/。这不是笔误：输出根目录这次
+# 从 work_dirs/slarm/ 改成了 output/，而已经训好的权重仍在原处，没有搬动。
+# exp_name 没变，所以两条路径只差一个根：
+#   work_dirs/slarm/<exp_name>/checkpoints/   已有权重
+#   output/<exp_name>/checkpoints/            新训练写这里
+# 想统一的话把旧目录搬过去即可：mv work_dirs/slarm/<exp_name> output/
 load_from: work_dirs/slarm/exp0819_001_slarm_stream25_24cm_triview_window6_uplr_nolseg/checkpoints/ckpt_039999.pth
 
 # ★ 确认这两个 scene_list 名与你 6.5cm 数据实际文件一致（否则会报“找不到文件”）
@@ -90,4 +93,4 @@ num_vis_samples: 1
 eval_every_n_iters: 50000
 keep_n_ckpts: 20
 project: slarm
-exp_name: ball_backbone_6.5cm
+exp_name: exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre

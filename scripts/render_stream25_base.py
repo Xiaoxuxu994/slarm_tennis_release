@@ -289,7 +289,7 @@ def main():
     p2.add_argument("--output_dir", default="output/stream25_inference")
     p2.add_argument("--lseg_model_scratch_path", default="ckpts/lseg/lseg_model_scratch.pth")
     p2.add_argument("--lseg_model_pretrained_path", default="ckpts/lseg/lseg_model_pretrained_replace_1x1conv_with_linear.pth")
-    p2.add_argument("--config", default="configs/ball_base_template.yml")
+    p2.add_argument("--config", default="configs/slarm_stream25_24cm_triview_window6.yaml")
     p2.add_argument("--depth-min", "--depth_min", dest="depth_min", type=float, default=None,
                     help="depth colour ramp lower bound in metres; "
                          "default: 2nd percentile of this scene's GT+pred depth")

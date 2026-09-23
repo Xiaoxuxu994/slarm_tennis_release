@@ -80,4 +80,4 @@ num_vis_samples: 1
 eval_every_n_iters: 50000
 keep_n_ckpts: 8
 project: slarm
-exp_name: ball_base_template
+exp_name: stream25_base_24cm_triview_window6

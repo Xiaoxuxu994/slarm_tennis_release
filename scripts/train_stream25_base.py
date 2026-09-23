@@ -19,7 +19,7 @@ import yaml
 
 
 WORKTREE = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG = WORKTREE / "configs/ball_training.yml"
+DEFAULT_CONFIG = WORKTREE / "configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
 
 
 def _sha256(path: str | Path) -> str:

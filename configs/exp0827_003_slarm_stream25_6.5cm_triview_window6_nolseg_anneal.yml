@@ -40,7 +40,7 @@
 #   就等于同时动了另一个头号嫌疑人（batch=1 的梯度噪声），结论会说不清。
 #
 #   先查 stage1 用了几张卡：
-#       grep "Global batch size" output/ball_backbone_6.5cm/logs/log.txt   # 新路径；改名前在 work_dirs/slarm/exp0825_002_*/
+#       grep "Global batch size" output/exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre/logs/log.txt   # 这次改动之前在 work_dirs/slarm/ 下
 #   然后用同样的卡数跑本组。
 #
 #   如果确实只能用更少的卡：照跑，但判读要收紧 ——
@@ -122,9 +122,12 @@ batch_size: 1
 seed: 20260827
 
 # 从 stage1 末点接着退火
-# load_from 指向的是 work_dirs/ 下的**历史**路径，不是上面 exp_name 的新路径。
-# 权重确实存在那里：这些目录是改名之前的训练留下的，没有搬动。新训练写到
-# output/<exp_name>/，两者并存，各自都对。
+# load_from 的根目录是 work_dirs/，不是新的 output/。这不是笔误：输出根目录这次
+# 从 work_dirs/slarm/ 改成了 output/，而已经训好的权重仍在原处，没有搬动。
+# exp_name 没变，所以两条路径只差一个根：
+#   work_dirs/slarm/<exp_name>/checkpoints/   已有权重
+#   output/<exp_name>/checkpoints/            新训练写这里
+# 想统一的话把旧目录搬过去即可：mv work_dirs/slarm/<exp_name> output/
 load_from: work_dirs/slarm/exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre/checkpoints/ckpt_039999.pth
 
 train_annotation: scene_list/ball_catch_6.5cm_triview_train.txt
@@ -138,4 +141,4 @@ num_vis_samples: 1
 eval_every_n_iters: 50000
 keep_n_ckpts: 6
 project: slarm
-exp_name: ball_backbone_anneal
+exp_name: exp0827_003_slarm_stream25_6.5cm_triview_window6_nolseg_anneal

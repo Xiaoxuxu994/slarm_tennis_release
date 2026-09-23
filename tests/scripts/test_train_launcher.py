@@ -7,8 +7,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = "configs/ball_training.yml"
-OTHER_CONFIG = "configs/ball_pretrain_2k.yml"
+DEFAULT_CONFIG = "configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
+OTHER_CONFIG = "configs/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu.yml"
 
 
 @pytest.fixture

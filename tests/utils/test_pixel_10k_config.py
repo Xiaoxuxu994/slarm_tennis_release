@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class Pixel10kConfigTest(unittest.TestCase):
     def setUp(self):
-        self.config = yaml.safe_load((ROOT / "configs/ball_training.yml").read_text())
+        self.config = yaml.safe_load((ROOT / "configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml").read_text())
 
     def test_pixel_only_and_initialization(self):
         # The ball-token branch was removed from the code, so a config that still
@@ -30,7 +30,7 @@ class Pixel10kConfigTest(unittest.TestCase):
         self.assertTrue(self.config["load_from"].endswith("ckpt_019999.pth"))
 
     def test_existing_pixel_loss_contract(self):
-        baseline = yaml.safe_load((ROOT / "configs/ball_pretrain_2k.yml").read_text())
+        baseline = yaml.safe_load((ROOT / "configs/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu.yml").read_text())
         for key in baseline:
             if key.startswith("stream25_") and (key.endswith("_weight") or key.endswith("_scale")):
                 self.assertEqual(self.config[key], baseline[key], key)
