@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 import src.utils.misc as misc
 from engine_tools import build_model
+from src.utils.paths import run_dir
 from src.dataset.constants import DATASET_DICT
 from src.dataset.data_utils import to_batch_tensor, prepare_inputs_and_targets
 from src.dataset.datasets import PerceptualModelDataset
@@ -33,7 +34,7 @@ torch.backends.cudnn.allow_tf32 = True
 def main(args):
     global logger
     args.exp_name = args.model.replace("/", "-") if args.exp_name is None else args.exp_name
-    log_dir = os.path.join(args.output_dir, args.project, args.exp_name)
+    log_dir = str(run_dir(args))
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     video_dir = os.path.join(log_dir, "videos")
     args.log_dir, args.ckpt_dir, args.video_dir = log_dir, checkpoint_dir, video_dir

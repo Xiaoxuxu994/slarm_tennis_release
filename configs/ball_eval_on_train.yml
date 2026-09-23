@@ -1,3 +1,52 @@
+# 评测口径不变，只把场景集合换成**训练集**。回答一个问题：
+#
+#     纯像素路径（没有 ball token）也有训练/验证差距吗？
+#
+# 为什么用这一组。exp0908_001 是 use_ball_token=false + use_ball_token_intrunk=false
+# 的纯像素路径，训在 scene_list/ball_catch_triview_0903_2k_train.txt 上，所以那些
+# 场景是模型真正见过的，而它正是下一轮实验要走的那条路。
+#
+# 已经知道的：同一份冻结权重上，ball token 的训练/验证差 3.9 倍
+#     训练日志 stream25_ball_vel_l2_ms  0.0257 m/s
+#     验证评测 balltoken vel15          0.101  m/s
+# 而验证集上重建指标全部达标（RGB 30.06、depth absrel 0.067、mIoU 0.909）——
+# 同一个 trunk 稠密重建泛化得很好，只有球状态不行。
+#
+# 像素路径的对应数字不存在：训练循环只记 ball token 的 m/s 误差，像素路径在
+# ms3_ball_raw 里是 v/5.0、a/9.81、j/1.0 归一化混合，换不回物理单位。这一跑就是
+# 去拿它。这里不需要训练日志做锚点 —— 同一个评测器、同一份权重、两批场景，
+# 本身就自洽。
+#
+# 方法。只改 eval_annotation。仍然走 Stream25EvalDataset（全 25 个 target、
+# 三目取最差、跨场景中位数），和验证评测逐字节同口径。不要用 --split train：
+# 那会走 Stream25Dataset(training=True)，只出 7 个 scheduler target，不可比，
+# 而且会触发 target 数量断言。
+#
+# 场景数对齐到 200（验证集大小）。中位数对样本量不敏感，p95 敏感，而且 1800 个
+# 场景要多跑 9 倍时间：
+#
+#     head -n 200 data/slarm_data/scene_list/ball_catch_triview_0903_2k_train.txt \
+#       > data/slarm_data/scene_list/ball_catch_triview_0903_2k_train_first200.txt
+#
+# 怎么读。和同一个 ckpt 的验证报告逐行对照，重点这三行：
+#
+#     ball velocity med            MS3 头直接预测的速度
+#     pixel fit vel15              六帧弹道拟合读出的速度
+#     pixel pos err const/scatter  逐帧位置误差的恒定/抖动分解
+#
+#   训练侧 ≈ 验证侧
+#       像素路径没有泛化差距 -> 泛化问题是 ball token 独有的（1536 维 token 上的
+#       小 MLP，1800 场景 x 3 个速度标量，太容易背下来；像素路径读的是渲染出来的
+#       几何，记忆自由度小得多）。砍掉 ball token，走像素/几何路线。
+#
+#   训练侧明显更好（比如 0.03 对 0.10）
+#       泛化是系统性的，换读出方式救不了。瓶颈是每场景的监督标量太少。
+#       别再调架构，去加场景数。
+#
+#   注意 scatter：如果训练侧的 scatter 明显更小，说明逐帧读出的噪声本身是泛化
+#   出来的，而不是传感器噪声 —— 那会进一步否掉"0.163 px 感知极限"这个解释。
+#
+# 这里不改任何权重、损失或架构。ckpt 用 --checkpoint 传，不经过 load_from。
 # 0903_2k 数据 · 房间场景 GS 渲染 · 三视图 · 四卡微调
 #
 # 起点：exp0827_003 退火终点 ckpt_005999（frame24 0.026 / 0.070，目前最好的 backbone）。
@@ -32,13 +81,13 @@
 #      的场景，那些场景的 frame24 是纯噪声，先剔掉再训。
 #
 #   ④ 模型初始化自检（missing 应为空、unexpected 应为 0）
-#        python tools/check_model_init.py --config configs/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu.yml
+#        python tools/check_model_init.py --config configs/ball_pretrain_2k.yml
 #
 #   ⑤ 强烈建议：先在 ckpt_005999 上做一次 zero-shot 评测，把 domain gap 的起点量出来。
 #      不做这一步，训完不知道涨了多少，也不知道该不该继续加数据。
 #        bash run_sh/eval.sh   # 或
 #        python scripts/eval_stream25_base.py --config <本文件> \
-#            --checkpoint work_dirs/slarm/exp0827_003_*/checkpoints/ckpt_005999.pth
+#            --checkpoint work_dirs/slarm/exp0827_003_*/checkpoints/ckpt_005999.pth   # 历史路径
 # ═══════════════════════════════════════════════════════════════
 #
 # ── 已核对的数据事实（本批 scene_7000 标注，逐项算过）────────────
@@ -150,7 +199,7 @@ load_depth: true
 #   头几百步容易把几何先验冲掉。
 #   想要更保守就退回 2 卡的数：
 #       sed -i 's/^lr: .*/lr: 5.0e-5/;s/^stream25_trunk_lr: .*/stream25_trunk_lr: 5.0e-6/' <本文件>
-#   跑起来后核对实际卡数：grep "Global batch size" work_dirs/slarm/<exp_name>/logs/log.txt
+#   跑起来后核对实际卡数：grep "Global batch size" output/<exp_name>/logs/log.txt
 lr: 7.0e-5
 stream25_trunk_lr: 7.0e-6            # 10:1。跨 domain 时把 backbone 压狠一点，
                                      # 让 head 去吸收外观变化，几何先验慢慢挪
@@ -162,10 +211,13 @@ warmup_iters: 1000                   # 5% 预算。跨 domain 的头几百步梯
 batch_size: 1                        # per-GPU
 seed: 20260908
 
+# load_from 指向的是 work_dirs/ 下的**历史**路径，不是上面 exp_name 的新路径。
+# 权重确实存在那里：这些目录是改名之前的训练留下的，没有搬动。新训练写到
+# output/<exp_name>/，两者并存，各自都对。
 load_from: work_dirs/slarm/exp0827_003_slarm_stream25_6.5cm_triview_window6_nolseg_anneal/checkpoints/ckpt_005999.pth
 
 train_annotation: scene_list/ball_catch_triview_0903_2k_train.txt
-eval_annotation: scene_list/ball_catch_triview_0903_2k_validation.txt
+eval_annotation: scene_list/ball_catch_triview_0903_2k_train_first200.txt
 
 # ---- 步数 ----
 # 2000 场景 / (4 卡 x bs1) = 500 步一个 epoch。20000 步 = 40 epoch。
@@ -184,4 +236,4 @@ eval_every_n_iters: 50000            # 训练内的 evaluate 不是 acceptance �
                                      #   bash run_sh/eval.sh
 keep_n_ckpts: 10
 project: slarm
-exp_name: exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu
+exp_name: ball_eval_on_train

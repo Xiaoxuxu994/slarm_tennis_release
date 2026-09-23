@@ -15,6 +15,7 @@ from main_slarm import get_args_parser
 from src.dataset.data_utils import prepare_inputs_and_targets
 from src.dataset.datasets import Stream25Dataset, Stream25EvalDataset
 from src.utils import misc
+from src.utils.paths import checkpoint_dir
 from src.utils.training_config import parse_args_with_yaml_config
 
 WORKTREE = Path(__file__).resolve().parent.parent
@@ -46,7 +47,7 @@ def load_stream25_args(
     args = parse_args_with_yaml_config(get_args_parser(), argv)
     args.data_root = str((WORKTREE / args.data_root).resolve()) if not Path(args.data_root).is_absolute() else args.data_root
     args.output_dir = str(Path(args.output_dir).resolve())
-    args.ckpt_dir = str(Path(args.output_dir) / args.project / args.exp_name / "checkpoints")
+    args.ckpt_dir = str(checkpoint_dir(args))
     args.require_stream25_checkpoint_contract = (
         checkpoint_path is not None and checkpoint_role == "evaluation"
     )

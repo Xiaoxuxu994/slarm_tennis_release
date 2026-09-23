@@ -13,8 +13,8 @@ set -euo pipefail
 #   代价是每个场景重新加载一次权重，几个场景无所谓。
 
 GPUS="0"
-CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
-CKPT="work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_019999.pth"
+CONFIG="configs/ball_training.yml"
+CKPT="output/ball_training/checkpoints/ckpt_019999.pth"
 
 # validation manifest 里的局部下标（不是全局 scene 编号）。
 SCENE_IDS="0"
@@ -31,7 +31,7 @@ export SLARM_SINGLE_PROCESS=1
 
 CONFIG_NAME="$(basename "${CONFIG}")"; CONFIG_NAME="${CONFIG_NAME%.*}"
 TAG="$(basename "${CKPT}" .pth)"
-ROOT="work_dirs/slarm/gs_ply/${CONFIG_NAME}/${TAG}"
+ROOT="output/gs_ply/${CONFIG_NAME}/${TAG}"
 
 IFS=',' read -ra SCENES <<< "${SCENE_IDS}"
 EST=$(( ${#SCENES[@]} * NUM_FRAMES * 3 * 30 ))

@@ -13,8 +13,8 @@ at the catch. Truth is the stored trajectory up to the last exported frame and
 the analytic ballistic continuation beyond it, marked as such in the output.
 
     python tools/export_ball_track.py \\
-        --config configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml \\
-        --checkpoint work_dirs/.../ckpt_013999.pth \\
+        --config configs/ball_training.yml \\
+        --checkpoint output/ball_training/checkpoints/ckpt_019999.pth \\
         --scene 0 --num-frames 46 --output ball_track
 
 Writes three files:

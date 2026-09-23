@@ -17,7 +17,7 @@ All output is ASCII.
 
 Usage:
   python tools/compare_evaluations.py a/evaluation.json b/evaluation.json ...
-  python tools/compare_evaluations.py work_dirs/slarm/stream25_eval/<cfg>/*/evaluation.json
+  python tools/compare_evaluations.py output/stream25_eval/<cfg>/*/evaluation.json
 """
 import argparse
 import json

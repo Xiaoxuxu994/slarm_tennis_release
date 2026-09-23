@@ -27,6 +27,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 import src.utils.distributed as distributed
 import src.utils.misc as misc
 from engine_tools import build_model, evaluate, evaluate_flow, evaluate_semantic, visualize
+from src.utils.paths import run_dir
 from src.dataset.constants import DATASET_DICT
 from src.dataset.data_utils import prepare_inputs_and_targets
 from src.dataset.samplers import InfiniteSampler, NoPaddingDistributedSampler, Stream25StepSampler
@@ -359,7 +360,7 @@ def get_args_parser():
     )
     parser.add_argument("--context_stride", default=1, type=int)
     # ============= Logging ============= #
-    parser.add_argument("--output_dir", default="./work_dirs")
+    parser.add_argument("--output_dir", default="./output")
     parser.add_argument("--num_vis_samples", type=int, default=1)
     parser.add_argument("--log_every_n_iters", type=int, default=50)
     parser.add_argument("--vis_every_n_iters", type=int, default=5000)
@@ -441,7 +442,7 @@ def main(args):
 
     global logger
     args.exp_name = args.model.replace("/", "-") if args.exp_name is None else args.exp_name
-    log_dir = os.path.join(args.output_dir, args.project, args.exp_name)
+    log_dir = str(run_dir(args))
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     video_dir = os.path.join(log_dir, "videos")
     args.log_dir, args.ckpt_dir, args.video_dir = log_dir, checkpoint_dir, video_dir

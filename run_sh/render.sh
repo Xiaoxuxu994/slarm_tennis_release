@@ -5,8 +5,8 @@ set -euo pipefail
 # 输出目录按 config 名 + ckpt 名自动生成，切换实验 / 权重时不会互相覆盖。
 
 GPUS="0"
-CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
-CKPT="work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_019999.pth"
+CONFIG="configs/ball_training.yml"
+CKPT="output/ball_training/checkpoints/ckpt_019999.pth"
 SCENE_IDS="0,1,2"      # validation manifest 内的局部下标（不是全局 scene 编号）
 NUM_FRAMES=46          # 渲染 [0,N)；>25 为外推（无 GT）。46 一直画到接球帧 45，
                        # 那是任务真正关心、也是没有存储真值的那一帧
@@ -15,10 +15,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export CUDA_VISIBLE_DEVICES="${GPUS}"
 export SLARM_SINGLE_PROCESS=1
 
-# 输出路径 = work_dirs/slarm/stream25_render/<config名>/<ckpt名>/
+# 输出路径 = output/stream25_render/<config名>/<ckpt名>/
 CONFIG_NAME="$(basename "${CONFIG}")"; CONFIG_NAME="${CONFIG_NAME%.*}"
 TAG="$(basename "${CKPT}" .pth)"
-OUT_DIR="work_dirs/slarm/stream25_render/${CONFIG_NAME}/${TAG}"
+OUT_DIR="output/stream25_render/${CONFIG_NAME}/${TAG}"
 mkdir -p "${OUT_DIR}"
 
 [ -f "${CKPT}" ] || { echo "checkpoint not found: ${CKPT}"; exit 1; }

@@ -6,7 +6,7 @@ catch-frame error, and the catch success rate under both distance criteria,
 plus the velocity and position errors that explain where a change came from.
 
     python tools/report_catch.py <evaluation.json> [<more.json> ...]
-    python tools/report_catch.py work_dirs/slarm/stream25_eval/<cfg>/ --markdown
+    python tools/report_catch.py output/stream25_eval/<cfg>/ --markdown
 
 Directories are searched for evaluation.json, so a whole checkpoint sweep can
 be passed at once and comes back as one table in checkpoint order.

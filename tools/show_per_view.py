@@ -65,7 +65,7 @@ def find_report(path: Path) -> Path:
                          + "\n  ".join(str(f) for f in found[:10]))
     raise SystemExit(f"[FAIL] no such file or directory: {path}\n"
                      f"       eval.sh writes to "
-                     f"work_dirs/slarm/stream25_eval/<config>/<ckpt>/evaluation.json")
+                     f"output/stream25_eval/<config>/<ckpt>/evaluation.json")
 
 
 def read_scopes(path: Path) -> Dict[str, Dict[str, Any]]:

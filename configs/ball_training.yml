@@ -107,6 +107,9 @@ min_lr: 1.0e-7
 warmup_iters: 1000
 batch_size: 1
 seed: 20260915
+# load_from 指向的是 work_dirs/ 下的**历史**路径，不是上面 exp_name 的新路径。
+# 权重确实存在那里：这些目录是改名之前的训练留下的，没有搬动。新训练写到
+# output/<exp_name>/，两者并存，各自都对。
 load_from: work_dirs/slarm/exp0908_001_slarm_stream25_0903_2k_triview_window6_nolseg_4gpu/checkpoints/ckpt_019999.pth
 train_annotation: scene_list/ball_catch_triview_0908_10k_train.txt
 eval_annotation: scene_list/ball_catch_triview_0908_10k_validation.txt
@@ -117,4 +120,4 @@ num_vis_samples: 2
 eval_every_n_iters: 50000
 keep_n_ckpts: 10
 project: slarm
-exp_name: exp0915_001_slarm_stream25_0908_10k_pixel_finetune
+exp_name: ball_training

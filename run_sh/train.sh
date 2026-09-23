@@ -14,11 +14,11 @@ set -euo pipefail
 #   6.5cm 这一系列（exp0827_003 退火 / exp0827_001,002 A-B / exp0829_001 in-trunk）
 #   全部是 2 卡跑的，互相可比。改成别的卡数，跟这些的横比就不成立了。
 #   核实某次实验实际用了几张：
-#       grep "Global batch size" work_dirs/slarm/<exp_name>/logs/log.txt
+#       grep "Global batch size" output/<exp_name>/logs/log.txt
 GPUS="${GPUS:-0,1,2,3}"
-CONFIG="${CONFIG:-configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml}"
-# 默认：0908_10k 像素路径微调。起点是 exp0908_001/ckpt_019999.pth（config 里的
-# load_from），不恢复旧 optimizer/步数。
+CONFIG="${CONFIG:-configs/ball_training.yml}"
+# 默认：0908_10k 像素路径微调，输出到 output/ball_training/。
+# 起点是 config 里 load_from 指向的 ckpt_019999.pth，不恢复旧 optimizer/步数。
 #
 # 开跑前核对权重确实加载上了（strict=False 会静默丢弃不匹配的 key）：
 #   SLARM_SINGLE_PROCESS=1 python tools/check_model_init.py --config "${CONFIG}"

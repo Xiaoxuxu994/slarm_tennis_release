@@ -5,7 +5,7 @@ set -euo pipefail
 # 切换实验 / 权重时不会互相覆盖。
 
 GPUS="0"
-CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
+CONFIG="configs/ball_training.yml"
 
 # CKPTS 可以是多个路径，也可以写通配符 —— 会按名字排序后逐个评测，
 # 每个 ckpt 有自己的输出目录（互不覆盖），最后自动打印一张跨 ckpt 的对照表。
@@ -15,12 +15,15 @@ CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
 #   那个差距也可能只是"训练侧是 batch 均值、验证侧是场景中位数"的口径差。
 #
 # 例：扫一整个实验的全部 ckpt
-#   CKPTS=("work_dirs/slarm/exp0910_004_balltoken_temporal_joint/checkpoints/ckpt_*.pth")
+#   CKPTS=("output/ball_pretrain_2k/checkpoints/ckpt_*.pth")
 CKPTS=(
+    # 这里默认指向新路径 output/。改名之前训出来的权重在
+    #   work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/
+    # 要评那一批，把下面的路径换过去即可 —— 两处都存在，各自都对。
     # 通配符会展开成全部 ckpt，按名字排序逐个评测，最后自动出对照表。
     # ★ 速度指标可能在训练中途见底后回升（exp0910_004 就是最早那个 ckpt 最好），
     #   所以末点不一定是最优点，要横着看。
-    "work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_*.pth"
+    "output/ball_training/checkpoints/ckpt_*.pth"
 )
 
 # 观测窗口的偏移量，跑几个就写几个。每个 offset 有独立的输出目录，不会互相覆盖。
@@ -42,7 +45,7 @@ SKIP_EXISTING=0
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export CUDA_VISIBLE_DEVICES="${GPUS}"
 
-# 输出路径 = work_dirs/slarm/stream25_eval/<config名>/<ckpt名>/
+# 输出路径 = output/stream25_eval/<config名>/<ckpt名>/
 # 与 render.sh 一致地剥掉任意后缀：ball token 的 config 是 .yml，只剥 .yaml 的话
 # 输出目录名会残留 ".yml"。%.* 从右侧剥最后一个点之后，对 "6.5cm" 这类文件名安全。
 CONFIG_NAME="$(basename "${CONFIG}")"; CONFIG_NAME="${CONFIG_NAME%.*}"
@@ -134,9 +137,9 @@ for CKPT in "${EXPANDED[@]}"; do
     TAG="$(basename "${CKPT}" .pth)"
     # offset 0 的目录名保持原样，历史结果原地可比、不会被重命名冲散。
     if [ "${OFF}" = "0" ]; then
-        OUT_DIR="work_dirs/slarm/stream25_eval/${CONFIG_NAME}/${TAG}"
+        OUT_DIR="output/stream25_eval/${CONFIG_NAME}/${TAG}"
     else
-        OUT_DIR="work_dirs/slarm/stream25_eval/${CONFIG_NAME}/${TAG}_off${OFF}"
+        OUT_DIR="output/stream25_eval/${CONFIG_NAME}/${TAG}_off${OFF}"
     fi
     mkdir -p "${OUT_DIR}"
     REPORTS+=( "${OUT_DIR}/evaluation.json" )

@@ -19,8 +19,8 @@ set -uo pipefail
 # ============================================================
 
 GPU="4"
-CONFIG="configs/exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre.yml"
-CKPT_DIR="work_dirs/slarm/exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre/checkpoints"
+CONFIG="configs/ball_backbone_6.5cm.yml"
+CKPT_DIR="output/ball_backbone_6.5cm/checkpoints"
 
 # 要扫的迭代号。"auto" = 自动发现 CKPT_DIR 下所有 ckpt_*.pth 并按步数排序
 ITERS="029999 033999 035999 037999 039999"
@@ -51,7 +51,7 @@ if [ "${ITERS}" = "auto" ]; then
 fi
 
 EXP_NAME="$(basename "${CKPT_DIR%/checkpoints}")"
-OUT_DIR="work_dirs/slarm/verify_sweep/${EXP_NAME}"
+OUT_DIR="output/verify_sweep/${EXP_NAME}"
 mkdir -p "${OUT_DIR}"
 
 echo "========================================================"
@@ -217,7 +217,7 @@ if len(vals) >= 3:
         print(f"   Record the baseline as a BAND {lo:.4f}~{hi:.4f} ({hi/lo:.1f}x), not as any "
               f"single number.")
         print(f"   Most likely cause: constant LR to the end, no decay and no EMA. Appending "
-              f"a cosine anneal usually settles it (see configs/exp0827_003) and costs far "
+              f"a cosine anneal usually settles it (see configs/ball_backbone_anneal.yml) and costs far "
               f"less than any architectural change.")
 
 md = out_dir / "summary.md"
