@@ -11,15 +11,22 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 import torch.nn.functional as F
 
-# Tri-view is the historical default and the basis of every published gate
-# report, so these two names stay as they are for the frozen acceptance table.
+# Tri-view is the historical default and the basis of every published gate report,
+# so these names stay fixed for the frozen acceptance table.
 #
-# The list is settable at run time because a two-view model renders a view axis of
-# length 2, while the evaluator reports a gate per named view; a hardcoded list
-# raises at the num_views check. The evaluation entry point resolves
+# The active list is settable at run time: a two-view model renders a view axis of
+# length 2, while the evaluator reports one gate per named view, so a hardcoded
+# list raises at the num_views check. The evaluation entry point resolves
 # camera_list[num_max_cameras] from the config and calls set_camera_order(); every
-# other caller should use get_camera_order() / get_required_eval_scopes().
+# other caller should go through get_camera_order() / get_required_eval_scopes().
 # Unset means tri-view, byte for byte as before.
+CAMERA_ORDER: Tuple[str, ...] = (
+    "front_left",
+    "front_right",
+    "lower_front",
+)
+REQUIRED_EVAL_SCOPES: Tuple[str, ...] = ("aggregate",) + CAMERA_ORDER
+DEFAULT_CAMERA_ORDER: Tuple[str, ...] = CAMERA_ORDER
 _ACTIVE_CAMERA_ORDER: Tuple[str, ...] = DEFAULT_CAMERA_ORDER
 
 
