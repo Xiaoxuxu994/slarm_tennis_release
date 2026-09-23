@@ -211,7 +211,7 @@ bash run_sh/train.sh --num_iterations 30000
 
 训练输出落在 `work_dirs/<project>/<exp_name>/`，由 config 里的 `exp_name` 决定。
 
-> 另有预设启动器 `run_sh/train_stream25_base.sh stereo|triview`，内置 stereo/triview 两套 config 的校验后再 exec `main_slarm.py`，按需选用。
+> 另有 `run_sh/train_stream25_base.sh`，在 exec `main_slarm.py` 之前把 config 与初始 checkpoint 的 sha256 打进日志，便于事后追溯某次训练到底用的哪份权重。
 
 ### 7.3 loss
 
