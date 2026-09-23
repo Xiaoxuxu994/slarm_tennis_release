@@ -1,33 +1,25 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# 用 verify_physics_extrapolation.py 扫一串 ckpt，看指标随训练步数怎么走。
+# Sweep checkpoints with verify_physics_extrapolation.py to see how the metrics
+# move with training step. Two checkpoints cannot tell a steady decline from a
+# lucky low point; several can. An order of magnitude faster than a full eval.
 #
-# 用途：判断一次训练到底收敛了没有。单看两个 ckpt 分不清「持续下降」和
-# 「某个点恰好是低谷」，多打几个点就清楚了。比完整 eval 快一个量级
-# （--limit 40，几分钟一个），足够看趋势。
+#   bash run_sh/verify_sweep.sh                # use ITERS below
+#   bash run_sh/verify_sweep.sh 029999 039999  # or name iterations directly
 #
-# 用法：
-#   bash run_sh/verify_sweep.sh              # 按下面 ITERS 跑
-#   bash run_sh/verify_sweep.sh 029999 039999  # 或命令行直接给迭代号
-#
-# 跑完屏幕上有对比表，同时在输出目录留一份 summary.md（可直接粘贴）
-# 和每个 ckpt 的完整日志。
-
-# ============================================================
-# 改这里
-# ============================================================
+# Leaves summary.md and a full log per checkpoint in the output directory.
 
 GPU="4"
 CONFIG="configs/exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre.yml"
 CKPT_DIR="output/exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre/checkpoints"
 
-# 要扫的迭代号。"auto" = 自动发现 CKPT_DIR 下所有 ckpt_*.pth 并按步数排序
+# Iterations to sweep. "auto" finds every ckpt_*.pth in CKPT_DIR, ordered by step.
 ITERS="029999 033999 035999 037999 039999"
 # ITERS="auto"
 
-LIMIT=40                 # 场景数。40 与 docs/BALL_LANDING_FINDINGS.md 的基线同口径
-MASK_SOURCE="pred"       # pred / gt / both。已确认 pred≈gt，扫趋势用 pred 即可，省一半时间
+LIMIT=40                 # scenes; matches the baseline in docs/BALL_LANDING_FINDINGS.md
+MASK_SOURCE="pred"       # pred / gt / both; pred ~= gt, so pred alone halves the time
 GRAVITY="0,0,-9.81"
 SPLIT="validation"
 
@@ -38,7 +30,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 [ -f "${CONFIG}" ] || { echo "config not found: ${CONFIG}"; exit 1; }
 [ -d "${CKPT_DIR}" ] || { echo "checkpoint dir not found: ${CKPT_DIR}"; exit 1; }
 
-# 命令行参数优先于上面的 ITERS
+# Command-line arguments win over ITERS above.
 if [ "$#" -gt 0 ]; then
     ITERS="$*"
 fi
@@ -105,13 +97,12 @@ echo ""
 echo "========================================================"
 
 python3 - "${OUT_DIR}" ${DONE_LIST} <<'PY'
-"""把各 ckpt 的 verify 日志解析成一张对比表。
+"""Parse each checkpoint's verify log into one comparison table.
 
-verify 的输出是固定宽度的表格，形如：
+verify prints fixed-width rows:
     region   metric               median        p95  n_valid
     pred     pos15_error          0.0364     0.0863       40
-    pred     phys(gravity)        0.0417     0.1062       40
-按 (region, metric) 抓 median / p95 两列。
+median and p95 are read per (region, metric).
 """
 import re, sys, pathlib
 
@@ -167,9 +158,9 @@ for it, g in rows:
                     f"| {f('frame24_phys',0)} | {f('frame24_phys',1)} |")
 print(sep)
 
-# 趋势判读：先判"末段有没有落定"，再谈别的。这个顺序很重要 ——
-# 带 LR 衰减的训练末段会稳下来，此时末点是收敛点，而 argmin 只是稳定区间里的一次
-# 小波动；constant LR 下则没有收敛点，每个存档都是采样。两种情况建议正好相反。
+# Ask whether the tail settled before anything else: with LR decay the last
+# checkpoint is the converged one and the argmin is just noise inside the stable
+# range, while at constant LR there is no converged point at all.
 vals = [(it, g["pos15"][0]) for it, g in rows if "pos15" in g]
 if len(vals) >= 3:
     first, last = vals[0][1], vals[-1][1]

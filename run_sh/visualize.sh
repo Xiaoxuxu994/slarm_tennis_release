@@ -1,33 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 数据可视化启动：接入新数据集时先跑这个，肉眼确认数据本身没问题。
-# 平时只需要改下面 5 个变量。
+# Look at one scene of a dataset before training on it.
 #
-# 输出目录按 数据集名 + 场景名 自动生成，换数据/换场景不会互相覆盖。
+#   bash run_sh/visualize.sh                  # everything, including the point cloud
+#   bash run_sh/visualize.sh --skip-3d        # 2D images and ball coverage only, fast
+#   bash run_sh/visualize.sh --list-labels    # print the semantic histogram and exit
 #
-# 用法：
-#   bash run_sh/visualize.sh                  # 完整（含点云导出，较慢）
-#   bash run_sh/visualize.sh --skip-3d        # 只出 2D 图与球占比统计（快）
-#   bash run_sh/visualize.sh --list-labels    # 只打印语义标签直方图后退出
-#   bash run_sh/visualize.sh --stride 4       # 额外参数直接透传给 py
+# Extra arguments pass through to tools/visualize_dataset.py.
 
-# ============================================================
-# 改这里
-# ============================================================
-
-DATA_ROOT="data/slarm_data_catch45"                       # 数据根目录
-DATASET="ball_catch_6.5cm_triview_catch45"                # 与标注 JSON 的 dataset 字段一致
-SPLIT="training"                                          # training / validation
-SCENE="scene_5000"                                        # 场景目录名
-BALL_LABEL=1                                              # 语义图里球的标签（先用 --list-labels 确认）
-
-# 例：24cm
-# DATA_ROOT="data/SLARM_data"; DATASET="ball_catch_24cm_triview"; SCENE="scene_0000"
-# 例：6.5cm
-# DATA_ROOT="data/SLARM_data_6.5"; DATASET="ball_catch_6.5cm_triview"; SCENE="scene_2000"
-
-# ============================================================
+DATA_ROOT="data/slarm_data_catch45"
+DATASET="ball_catch_6.5cm_triview_catch45"   # must match the annotation JSON's dataset field
+SPLIT="training"                             # training / validation
+SCENE="scene_5000"
+BALL_LABEL=1                                 # confirm with --list-labels
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

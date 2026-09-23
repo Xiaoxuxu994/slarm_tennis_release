@@ -1,26 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 导出可视化用的高斯 .ply。一条命令：bash run_sh/export_gs.sh
+# Export Gaussian .ply files for viewing: bash run_sh/export_gs.sh
 #
-# 不需要改任何 config —— render_stream25_base.py 用 parse_known_args 把认不出的
-# 参数原样转给 main_slarm 的 parser（scripts/render_stream25_base.py:191-197），
-# 所以 --save_gaussian / --gaussian_save_path 直接从命令行透传就行。
-#
-# ★ 为什么逐场景单独调用：save_gs_params_to_ply 写出的文件名只有帧号
-#   （gs_15.ply），没有场景号，而 gaussian_save_path 在建模型时就固定了。
-#   一次跑多个场景会互相覆盖，且不报错。所以每个场景一次调用、一个目录。
-#   代价是每个场景重新加载一次权重，几个场景无所谓。
+# One call per scene, deliberately: save_gs_params_to_ply names files by frame
+# only (gs_15.ply) and gaussian_save_path is fixed when the model is built, so
+# several scenes in one call would overwrite each other without an error.
 
 GPUS="0"
 CONFIG="configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
 CKPT="output/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_019999.pth"
 
-# validation manifest 里的局部下标（不是全局 scene 编号）。
-SCENE_IDS="0"
-
-# 渲染 [0, N)。每帧写 3 个 ply，每个约 30 MB —— 见下方体积估算。
-NUM_FRAMES=25
+SCENE_IDS="0"    # indices into the validation manifest, not global scene numbers
+NUM_FRAMES=25    # three ply files per frame, roughly 30 MB each
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export CUDA_VISIBLE_DEVICES="${GPUS}"
@@ -38,22 +30,21 @@ EST=$(( ${#SCENES[@]} * NUM_FRAMES * 3 * 30 ))
 
 echo "config     : ${CONFIG}"
 echo "ckpt       : ${TAG}"
-echo "scenes     : ${SCENE_IDS}  (${#SCENES[@]} 个)"
+echo "scenes     : ${SCENE_IDS}  (${#SCENES[@]} total)"
 echo "num_frames : ${NUM_FRAMES}"
 echo "out        : ${ROOT}/scene_XXXX/"
-echo "估算体积   : 约 ${EST} MB —— 高斯数 = 6帧 x 3目 x H x W，滤掉 opacity<0.1 后约一半"
+echo "estimated  : about ${EST} MB"
 echo ""
 AVAIL=$(df -Pm . | awk 'NR==2{print $4}')
 if [ "${AVAIL}" -lt "$(( EST * 2 ))" ]; then
-    echo "[FAIL] 当前目录可用空间 ${AVAIL} MB，不足估算值的两倍。"
-    echo "       调小 NUM_FRAMES 或 SCENE_IDS 再跑。"
+    echo "[FAIL] only ${AVAIL} MB free here, less than twice the estimate."
+    echo "       Reduce NUM_FRAMES or SCENE_IDS."
     exit 1
 fi
 
 for SCENE in "${SCENES[@]}"; do
     OUT_DIR="${ROOT}/scene_$(printf '%04d' "${SCENE}")"
-    # save_gs_params_to_ply 直接 PlyData.write，不会自己建目录。
-    mkdir -p "${OUT_DIR}"
+    mkdir -p "${OUT_DIR}"    # save_gs_params_to_ply will not create it
     echo "=========================================================="
     echo "scene ${SCENE} -> ${OUT_DIR}"
     echo "=========================================================="
@@ -71,16 +62,15 @@ done
 
 echo "=========================================================="
 PLY_COUNT=$(find "${ROOT}" -name '*.ply' | wc -l | tr -d ' ')
-echo "${PLY_COUNT} 个 ply，合计 $(du -sh "${ROOT}" | cut -f1) -> ${ROOT}/"
+echo "${PLY_COUNT} ply files, $(du -sh "${ROOT}" | cut -f1) total -> ${ROOT}/"
 echo ""
-echo "每个 target 帧三个文件："
-echo "  gs_<frame>.ply           高斯（已按 MS3 运动位移到该时刻）"
-echo "  gs_rgb_<frame>.ply       RGB 着色"
-echo "  gs_semantic_<frame>.ply  语义着色 —— 球是类别 1，看球的位置用这个"
+echo "Three files per target frame:"
+echo "  gs_<frame>.ply           gaussians, already moved to that instant by MS3"
+echo "  gs_rgb_<frame>.ply       RGB coloured"
+echo "  gs_semantic_<frame>.ply  semantic coloured; the ball is class 1"
 echo ""
-echo "怎么看："
-echo "  MeshLab      打得开，但只当点云显示（顶点色对，opacity/scale/rot 被忽略，"
-echo "               没有 splatting）。判断几何位置够用，评估重建质量不够。"
-echo "  SuperSplat   superspl.at/editor，浏览器拖进去即可，真正的高斯渲染。"
-echo "               文件是标准 INRIA 格式：scale 存 log、opacity 存 logit，"
-echo "               查看器自己做 exp/sigmoid。"
+echo "Viewing:"
+echo "  MeshLab     opens them as a point cloud only -- vertex colours are right,"
+echo "              opacity/scale/rotation ignored, no splatting."
+echo "  SuperSplat  superspl.at/editor, drag the file in, real gaussian rendering."
+echo "              Standard INRIA format: scale in log, opacity in logit."
