@@ -1,13 +1,10 @@
-"""报告写出路径的接线。
+"""Wiring of the report-writing path.
 
-存在的理由：`_finalize_and_write` 是**独立的顶层函数**（为了支持多 shard 合并），
-不是 `run_evaluation` 的内嵌闭包。commit a325081 往它体内加了对
-`ball_surface_offset` 的引用却没加参数，结果是**每一次 eval 都 NameError** ——
-连不开补偿的也一样，因为写进 result 的那两行无条件执行。当时的 AST 检查只覆盖了
-计算链（run_evaluation -> evaluate_scene -> ... -> compute_rendered_frame24_position_errors），
-漏了报告链，而已有测试没有一条真正调用过这个函数。
-
-    pytest tests/scripts/test_eval_report_wiring.py -q
+_finalize_and_write is a top-level function, not a closure inside run_evaluation,
+so a reference added to its body without a matching parameter is a NameError on
+every eval -- which is what happened once, unconditionally, even with the feature
+it referenced turned off. The AST guard that existed then covered the computation
+chain and missed the report chain, and no test actually called the function.
 """
 from __future__ import annotations
 
@@ -26,8 +23,8 @@ from src.utils.stream25_metrics import CAMERA_ORDER  # noqa: E402
 
 
 def _load_finalizer():
-    """导入 eval 脚本。它会一路拉到 slarm.py 的 gsplat（CUDA-only），
-    所以在没有 CUDA 的机器上跳过 —— 静态那条测试不需要 import，永远会跑。"""
+    """Import the eval script; it pulls in gsplat, so skip without CUDA. The
+    static test below needs no import and always runs."""
     pytest.importorskip("gsplat", reason="eval_stream25_base imports the CUDA rasterizer")
     from scripts.eval_stream25_base import _finalize_and_write
     return _finalize_and_write
@@ -64,7 +61,7 @@ def _write(tmp_path, **kwargs):
 
 
 def test_writing_the_report_does_not_raise(tmp_path):
-    """最基本的一条：这个函数被调用过。NameError 会在这里炸。"""
+    """The basic one: the function is actually called. A NameError lands here."""
     result, out = _write(tmp_path)
     assert out.exists()
     assert json.loads(out.read_text())["overall"] in ("PASS", "FAIL")
@@ -77,7 +74,8 @@ def test_compensation_off_is_recorded_as_off(tmp_path):
 
 
 def test_compensation_on_is_stamped_into_the_method_name(tmp_path):
-    """开了补偿之后，口径必须跟着数字一起写进结果，否则两次运行无法比对。"""
+    """With compensation on, the setting must be written beside the numbers, or
+    two runs cannot be compared."""
     result, out = _write(
         tmp_path,
         ball_surface_offset=0.021,
@@ -91,16 +89,16 @@ def test_compensation_on_is_stamped_into_the_method_name(tmp_path):
 
 
 def test_no_top_level_function_references_an_unresolvable_name():
-    """静态兜底：捕捉"编辑落进了错误的函数作用域"这一整类 bug。
+    """Static net for a whole class of bug: an edit that landed in the wrong
+    function scope.
 
-    a325081 就是这个形状 —— 改动看起来在 run_evaluation 里，实际落在
-    _finalize_and_write 里，闭包不成立。逐个函数检查自由变量是否可解析，
-    比逐个补端到端测试便宜得多。
+    The change looked like it was inside run_evaluation but was in
+    _finalize_and_write, where no closure exists. Checking every function's free
+    variables is far cheaper than an end-to-end test for each one.
     """
     source = EVAL_SRC.read_text(encoding="utf-8")
-    # ★ compile()，不是 ast.parse()。重复参数名之类的错误是**编译期**检查，
-    #   parse 会放过去；用 ast.parse 做守卫时，一个 duplicate argument 能一路
-    #   活到 import 才炸。
+    # compile(), not ast.parse(): duplicate argument names are a compile-time
+    # error that parse lets through, surviving until import.
     compile(source, str(EVAL_SRC), "exec")
     tree = ast.parse(source)
     module_names = set(dir(builtins)) | {"__name__", "__file__"}
@@ -140,4 +138,4 @@ def test_no_top_level_function_references_an_unresolvable_name():
             if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
                 if sub.id not in bound and sub.id not in module_names:
                     problems.append(f"{fn.name}() line {sub.lineno}: {sub.id}")
-    assert not problems, "无法解析的自由变量：\n  " + "\n  ".join(sorted(set(problems)))
+    assert not problems, "unresolvable free variables:\n  " + "\n  ".join(sorted(set(problems)))

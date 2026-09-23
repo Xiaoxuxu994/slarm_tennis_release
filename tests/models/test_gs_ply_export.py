@@ -1,20 +1,12 @@
-"""高斯 ply 导出的两处接线。
+"""Two wiring bugs in the gaussian ply export, both of which failed silently.
 
-存在的理由是两个都**不报错**的失败：
+target_frame_idx is [b, tgt_t * v], each frame number repeated per camera, and
+indexing it with t_idx made filenames collapse to t_idx // v -- three different
+target frames writing the same name, last one winning, no error. And
+gs_semantic_*.ply sat behind `if self.with_feat:`, which the woLSeg variant pins
+to False, so a whole class of file was quietly missing.
 
-1. `target_frame_idx` 的布局是 [b, tgt_t * v]（每个帧号按相机重复 v 次），
-   而 save_gs_params_to_ply 曾经直接用 t_idx 去索引它。于是文件名等于
-   t_idx // v：只产出 ceil(tgt_t/v) 个不同的名字，每个名字还被三个不同的
-   目标帧先后写入，活下来的是最后一个。NUM_FRAMES=48 时的表现就是"只输出
-   到 gs_15"，而那个文件里装的是目标帧 47。文件名和内容对不上，没有异常。
-
-2. `gs_semantic_*.ply` 原来藏在 `if self.with_feat:` 里，而 woLSeg 变体把
-   with_feat 硬编码成 False 且该分支第一行就 raise NotImplementedError，
-   所以它从来没执行过 —— 导出目录里安静地少一类文件。
-
-两条都是静态检查：导入 slarm 会一路拉到 gsplat（CUDA-only）。
-
-    pytest tests/models/test_gs_ply_export.py -q
+Static checks: importing slarm pulls in gsplat, which is CUDA-only.
 """
 from __future__ import annotations
 
@@ -46,8 +38,8 @@ def test_every_target_frame_gets_its_own_file_name(tgt_t, views):
     """Reproduce both layouts and show the old one collapses names."""
     flattened = [frame for frame in range(tgt_t) for _ in range(views)]
     collapsed = {flattened[i] for i in range(tgt_t)}
-    assert len(collapsed) == -(-tgt_t // views)          # 旧行为：名字变少
-    normalized = list(range(tgt_t))                       # 新行为：[b, t]
+    assert len(collapsed) == -(-tgt_t // views)          # old behaviour: fewer distinct names
+    normalized = list(range(tgt_t))                       # new behaviour: [b, t]
     assert len(set(normalized)) == tgt_t
     assert sorted(normalized) == normalized
 

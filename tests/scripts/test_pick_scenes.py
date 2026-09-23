@@ -1,15 +1,12 @@
-"""挑场景：从已有报告里排名，而不是把 GPU 花在钓鱼上。
+"""Rank scenes from an existing report instead of spending a GPU fishing.
 
-报告里本来就带着全部 200 个场景的逐场景指标，所以"渲 20 条挑一条好的"是在
-重算已经算过的东西，而且只覆盖了有耐心渲的那 20 条。
+The report already carries per-scene metrics for all 200 scenes, so rendering 20
+and picking a good one recomputes what was computed and only covers those 20.
 
-这份测试盯三件事：
-  1. 排名方向对（落点越小越好、IoU 越大越好）—— 搞反了不会报错，只会给出
-     系统性最差的场景，而且看起来像模像样
-  2. 缺指标的场景被排除而不是当成 0
-  3. 最好 / 中位 / 最差三档都输出 —— 只给"最好"就是无声的挑好的说
-
-    pytest tests/scripts/test_pick_scenes.py -q
+Checked: the ranking direction (landing smaller is better, IoU larger is better),
+which fails silently by returning the systematically worst scenes; that scenes
+missing a metric are excluded rather than scored zero; and that best, median and
+worst are all reported, since offering only "best" is cherry-picking by omission.
 """
 from __future__ import annotations
 

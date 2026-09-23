@@ -1,36 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""为一批新落地的数据生成 scene_list/*.txt。
+"""Build scene_list/*.txt for a freshly dropped dataset tree.
 
-为什么需要
-----------
-接入一批新数据的顺序是 scene_list -> register_dataset -> check_dataset_contract
--> 训练，而第一步之前没有工具：register_dataset.py 要 ``<root>/scene_list/*.txt``
-已经存在才能读出 dataset 名，fix_scene_list.py 是把**已有**行补全成路径。
-拿到一棵裸数据树时，两个都用不上。
+First step of onboarding: scene_list -> register_dataset -> check_dataset_contract
+-> inspect_trajectory -> train. Every line must be the annotation JSON's path
+RELATIVE TO data_root, which is what datasets.py opens. The validation split is
+taken at even intervals over sorted scene names, never as a trailing block: scene
+numbers usually track a generation parameter, so the tail is a corner of the
+parameter space rather than a sample of the training distribution.
 
-dataloader 读的是标注 JSON（``datasets.py:192``）::
-
-    with open(os.path.join(data_root, annotation_path), "r") as f:
-
-所以每一行必须是 JSON **相对 data_root** 的路径。图像是另一棵树
-（``datasets.py:283``：``<root>/datasets/<dataset>/<relative_image_path>``），
-这里不碰。
-
-划分方式
---------
-按场景名排序后**等间隔**抽验证集，不取末尾连续的一段。场景编号常常和某个
-生成参数相关（角度、速度、位置），取尾巴会让验证集系统性偏向参数空间的一角，
-那样的验证指标不代表训练分布。等间隔抽样是确定性的，重跑结果一致。
-
-用法
-----
     python tools/make_scene_list.py --data-root data/slarm_data \
-        --dataset ball_catch_triview_0902_fixed --val-count 5
-    python tools/make_scene_list.py --data-root data/slarm_data \
-        --dataset ball_catch_triview_0902_fixed --val-count 5 --write
+        --dataset ball_catch_triview_0908_10k --val-count 20 [--write]
 
-只依赖标准库。所有输出是纯 ASCII 英文。
+Standard library only. All output is ASCII English.
 """
 from __future__ import annotations
 
@@ -40,14 +22,14 @@ import sys
 from pathlib import Path
 
 
-# 场景标注必须有这些顶层键才可能被 dataloader 用起来。
-# 拿它们当判据而不是文件名：场景目录里常常还有相机参数、渲染日志之类的 JSON，
-# 只按 *.json 收会把它们一起写进 scene_list，然后训练在第一次 __getitem__ 崩掉。
+# Identify annotations by these keys, not by filename: scene directories also hold
+# camera parameters and render logs, and collecting every *.json would put those in
+# scene_list and crash training at the first __getitem__.
 ANNOTATION_KEYS = ("dataset", "num_timesteps", "relative_image_path")
 
 
 def looks_like_annotation(path: Path, dataset: str) -> bool:
-    """这个 JSON 是不是本数据集的场景标注。"""
+    """Is this JSON a scene annotation for this dataset?"""
     try:
         js = json.loads(path.read_text(encoding="utf-8"))
     except Exception:                                        # noqa: BLE001
@@ -60,11 +42,11 @@ def looks_like_annotation(path: Path, dataset: str) -> bool:
 
 
 def find_annotation_jsons(root: Path, dataset: str) -> tuple[list[Path], str]:
-    """定位这个 dataset 的标注 JSON。返回 (paths, 用了哪种搜法)。
+    """Find this dataset's annotation JSONs; returns (paths, how they were found).
 
-    先查约定目录，查不到再全局扫。两条路径都按 looks_like_annotation 过滤 ——
-    "dataset" 字段是 dataloader 真正依赖的东西（constants.py 两张表都用它做 key），
-    比目录布局可靠；而且场景目录里往往还躺着别的 JSON，不过滤就会混进来。
+    Tries the conventional directory first, then scans. Both paths filter on the
+    "dataset" field, which is what the dataloader actually keys on and is more
+    reliable than the directory layout.
     """
     for sub in ("annotations", "datasets"):
         base = root / sub / dataset
@@ -74,14 +56,14 @@ def find_annotation_jsons(root: Path, dataset: str) -> tuple[list[Path], str]:
             if found:
                 return found, f"{sub}/{dataset}/**/*.json"
 
-    # 兜底：全局扫。慢，但只在布局不合约定时才走到
+    # Fallback scan: slow, and only reached when the layout is unconventional.
     found = sorted(p for p in root.rglob("*.json")
                    if dataset in str(p) and looks_like_annotation(p, dataset))
     return found, 'rglob + "dataset" field match'
 
 
 def split_indices(n: int, val_count: int) -> tuple[list[int], list[int]]:
-    """等间隔取验证集，其余为训练集。确定性，重跑一致。"""
+    """Even-interval validation split; deterministic across runs."""
     if val_count <= 0:
         return list(range(n)), []
     if val_count >= n:
@@ -125,8 +107,8 @@ def main() -> int:
         print("[FAIL] no annotation JSON matched. A file counts only when its top level")
         print(f"       has {list(ANNOTATION_KEYS)} and 'dataset' equals {args.dataset!r}.")
         print("")
-        # 列出这个 root 下实际有哪些数据集，比让人回去翻目录有用得多。
-        # 最常见的失败就是名字差一点（多一段、少一段、下划线不同）。
+        # List what is actually here; the usual failure is a name that is close
+        # but not exact.
         dirs = sorted({d.name for sub in ("annotations", "datasets")
                        if (root / sub).is_dir()
                        for d in (root / sub).iterdir() if d.is_dir()})
@@ -142,7 +124,7 @@ def main() -> int:
             print("       Check the data-root against the actual tree.")
         return 2
 
-    # 已按 dataset 字段过滤过，这里只是把接入前该核对的事实摊开
+    # Already filtered by dataset field; this just lays out the facts to check.
     sample = json.loads(found[0].read_text(encoding="utf-8"))
     print(f"sample    : {found[0].relative_to(root)}")
     print(f"declared  : {sample.get('dataset')!r}")

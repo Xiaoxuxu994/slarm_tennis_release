@@ -1,31 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""开跑前的模型初始化自检：ckpt 到底加载进去了多少，参数分到哪个 LR 组。
+"""Report how much of a checkpoint actually loaded, and each parameter's LR group.
 
-为什么需要这个
---------------
-``misc.load_model`` 用 ``strict=False`` 加载，而它对 missing / unexpected keys
-的处理是 ``if forbidden_missing: pass`` —— **权重没对上不会报错**。
-``validate_stream25_checkpoint_contract`` 同样全是 ``pass``。
+misc.load_model is strict=False, so weights that fail to match are silently left
+randomly initialised and the run looks like a failed experiment. The other silent
+failure is a new module whose name happens to match a trunk prefix and so trains
+at trunk_lr, a fifth to a twenty-fifth of the head rate -- it then looks like the
+idea did not work.
 
-于是这两类事故都不会有任何提示：
+Builds the model and loads the checkpoint; no forward pass.
 
-  - 改了模型结构（比如加一个 special token），某些权重悄悄没加载进去，
-    你以为在微调，其实半个网络是随机初始化的；
-  - config 的 num_context_timesteps / timespan / dataset 与 ckpt 里存的契约不符，
-    训出来的模型和你以为的不是一个东西。
+    SLARM_SINGLE_PROCESS=1 python tools/check_model_init.py --config <config>
 
-还有一类更隐蔽的：新加的模块名字命中了 trunk 前缀，被分去吃 trunk_lr
-（head 的 1/5 ~ 1/25），跑完发现"这个方法没用"，其实是它压根没学。
-
-这个脚本只构建模型 + 加载 ckpt + 打印分组，不跑 forward，几十秒出结果。
-
-用法
-----
-    python tools/check_model_init.py --config configs/xxx.yml
-    python tools/check_model_init.py --config configs/xxx.yml --checkpoint path/to.pth
-
-不给 --checkpoint 时用 config 里的 load_from。所有输出是纯 ASCII 英文。
+Without --checkpoint it uses the config's load_from. All output is ASCII English.
 """
 from __future__ import annotations
 
@@ -40,7 +27,7 @@ if str(WORKTREE) not in sys.path:
 
 
 def _group_names(names, max_show=12):
-    """把一堆参数名按模块前缀折叠，避免刷屏。"""
+    """Fold parameter names by module prefix so the output stays readable."""
     buckets = OrderedDict()
     for n in names:
         head = n.split(".")[0]
@@ -104,7 +91,7 @@ def main() -> int:
         print(f"aggregator : patch_start_idx={agg.patch_start_idx}"
               + (f"  [{', '.join(flags)}]" if flags else ""))
 
-    # ---------------- checkpoint 加载 ----------------
+    # ---------------- checkpoint loading ----------------
     print("")
     print("-" * 78)
     print("Checkpoint load")
@@ -117,11 +104,10 @@ def main() -> int:
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     raw_state = ckpt.get("model", ckpt)
 
-    # ★ 必须走 load_model 用的同一条预处理，否则这个自检会给出假阴性。
-    #   裸的 load_state_dict 会在 aggregator.affine_token 上报 size mismatch
-    #   （三视图 ckpt -> 双视图模型是 [1,3,768] vs [1,2,768]），而真实训练路径
-    #   会按相机名 index_select 把它接上；分辨率相关的 plucker buffer 同理。
-    #   这里曾经直接调 load_state_dict，导致本来能训的配置被报成不兼容。
+    # Use the same preprocessing load_model uses, or this check gives false
+    # negatives: a bare load_state_dict reports a size mismatch on
+    # aggregator.affine_token for a tri-view checkpoint into a two-view model,
+    # while the real path index_selects it by camera name.
     state, camera_report = prepare_checkpoint_state_for_model(
         ckpt, model.state_dict(), args, checkpoint_path=ckpt_path
     )
@@ -157,7 +143,7 @@ def main() -> int:
         print("")
         print("Every tensor matched. This is a pure resume of the same architecture.")
 
-    # ---------------- 契约对比 ----------------
+    # ---------------- contract comparison ----------------
     stored = ckpt.get("stream25_contract")
     if stored:
         print("")
@@ -181,7 +167,7 @@ def main() -> int:
         else:
             print("  identical")
 
-    # ---------------- 参数分组 ----------------
+    # ---------------- parameter groups ----------------
     print("")
     print("-" * 78)
     print("Learning-rate groups")

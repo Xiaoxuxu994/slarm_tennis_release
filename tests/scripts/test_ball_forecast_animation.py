@@ -1,13 +1,10 @@
-"""因果预报动画：拟合本身、收敛性、以及它拒绝在缺信息时瞎猜。
+"""The causal forecast animation: the fit, its convergence, and its refusal to
+guess when it has too little to go on.
 
-动画每一步是「只用到第 k 帧为止的观测」拟合一条弹道，外推到接球帧。它要讲的是
-**收敛**：两个观测时落点是猜的，每多一个观测应该把它拉向真值。所以这份测试的
-核心不是画得好不好，而是那条拟合对不对、以及误差确实随观测数下降。
-
-动画读的是像素路径真正产出的量：渲染球心。像素路径没有 ball token，
-也不需要有。
-
-    pytest tests/scripts/test_ball_forecast_animation.py -q
+Each step fits a ballistic arc to the observations up to frame k and extrapolates
+to the catch frame, so what the clip shows is convergence. These tests check the
+fit itself and that the error really falls as observations accumulate, not that
+the picture looks nice. The quantity animated is the rendered ball centre.
 """
 from __future__ import annotations
 
@@ -86,7 +83,7 @@ def test_the_forecast_converges_as_observations_arrive():
     assert medians[0] / medians[-1] > 3, "the whole point is that it tightens a lot"
 
 
-# ---------------------------------------------------------------- flight 模式
+# ---------------------------------------------------------------- flight mode
 
 def test_flight_runs_one_frame_per_rendered_frame():
     """The clip should run at the scene's own pace, not at the observation

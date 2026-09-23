@@ -109,7 +109,7 @@ import matplotlib.pyplot as plt
 
 # ============================================================
 # DEFAULT CONFIGURATION
-# Press F5 directly in VS Code / PyCharm，或用 run_sh/visualize.sh
+# Press F5 in VS Code / PyCharm, or use run_sh/visualize.sh
 # ============================================================
 
 DEFAULT_ROOT = Path(
@@ -159,9 +159,9 @@ DEFAULT_BALL_LABEL = 1
 
 # frames used for the occupancy statistics
 #
-# 必须覆盖全部 25 帧，不能只到 15：frame 16-24 是外推段，落点(frame 24)就在里面。
-# 球在这一段的像素尺寸决定了逐像素落点法能不能用 —— 6.5cm 数据上
-# ball_iou farthest 只有 0.194，问题正是出在 22-24 帧。
+# Cover all 25 frames, not just 15: 16-24 is the extrapolated span and holds the
+# landing. The ball's pixel size there decides whether the per-pixel landing
+# method works at all.
 DEFAULT_RATIO_FRAMES = list(range(25))
 
 
@@ -633,7 +633,7 @@ def print_ball_ratio_table(records, cams, ball_label):
                 f"  -> equiv diameter  min {min(diams):.2f} px  "
                 f"max {max(diams):.2f} px"
             )
-            # 判读参考：<3 px 时逐像素落点法基本失效（6.5cm 数据 farthest 段的情形）
+            # Below about 3 px the per-pixel landing method stops working
             tiny = [r["frame"] for r in vis if r["equiv_diameter_px"] < 3.0]
             if tiny:
                 print(
@@ -655,7 +655,7 @@ def print_ball_ratio_table(records, cams, ball_label):
                 "     (check for occlusion / out-of-view "
                 "before assuming the label is wrong)"
             )
-            # context 帧不可见会破坏 stream25 的三目一致性契约
+            # An invisible context frame breaks the tri-view contract
             ctx = [f for f in empty_frames if f in (0, 3, 6, 9, 12, 15)]
             if ctx:
                 print(
@@ -737,7 +737,7 @@ def save_ball_ratio_curve(records, cams, ball_label, out_path):
             label=cam,
         )
 
-    # frame 15 之后是外推段；3 px 是逐像素定位的可用下限
+    # Past frame 15 is extrapolation; 3 px is the floor for per-pixel location
     for ax in (ax1, ax2):
         ax.axvline(15.5, color="0.5", linestyle="--", linewidth=1.0)
         ax.text(

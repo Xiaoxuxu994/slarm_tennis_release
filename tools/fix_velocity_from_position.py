@@ -1,40 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""用 position_rig 重算 velocity_rig。
+"""Recompute velocity_rig from position_rig.
 
-为什么
-------
-标注里位置和速度是两组独立的数，物理上必须自洽。对匀加速运动（球在重力下就是），
-中点法则是**恒等**而非近似::
+Position and velocity are annotated independently but must agree. Under constant
+acceleration the midpoint rule is an identity, not an approximation, so
+(pos[i+1]-pos[i])/dt and (vel[i]+vel[i+1])/2 should differ only by float noise; a
+gap of 0.1 m/s means the two were not derived from the same trajectory. If
+check_dataset_contract's gravity check passes, the positions are a clean parabola
+and it is the velocity that is wrong.
 
-    x(t+dt) - x(t) = v*dt + 0.5*a*dt^2
-    (v(t) + v(t+dt))/2 = v + 0.5*a*dt          <- 两边同除 dt 完全相等
+Worth fixing even without a ball token: velocity_rig becomes the dense MS3 ball
+velocity GT, which moves the ball's gaussians to each target frame and so decides
+where the rendered ball lands.
 
-所以 ``(pos[i+1]-pos[i]) / dt`` 和 ``(vel[i]+vel[i+1])/2`` 之间的差应当是浮点噪声。
-差到 0.1 m/s 量级，就说明两组数不是从同一条轨迹导出来的。
+Central differences are exact for a quadratic, with three-point one-sided formulas
+at the ends, so the reconstruction is exact rather than approximate.
 
-坏的是哪一边可以定位：check_dataset_contract 用 position 的**二阶**差分反推重力，
-那一条通过就说明位置是干净的抛物线，于是错的是速度。速度可以从位置无损重建，
-不必等数据方重新导出。
+    python tools/fix_velocity_from_position.py --data-root <root> [--write]
 
-为什么值得修
-------------
-``stream25.py:271`` 把 ``velocity_rig`` 直接写进 dense MS3 的球速 GT，而 MS3 决定
-球的高斯在 target 帧被搬到哪（``means + v*tdiff``），进而决定渲染出的球位置，
-再决定像素法反投影出的落点。**不用 ball token 也会中招。**
-
-数值方法
---------
-中心差分 ``(pos[i+1]-pos[i-1]) / (2*dt)`` 对二次函数是精确的，端点用三点单侧公式
-``(-3*p0 + 4*p1 - p2) / (2*dt)``，同样对二次函数精确。所以整条轨迹上重建都是精确的，
-不是近似。
-
-用法
-----
-    python tools/fix_velocity_from_position.py --data-root data/slarm_data
-    python tools/fix_velocity_from_position.py --data-root data/slarm_data --write
-
-只依赖标准库。所有输出是纯 ASCII 英文。
+Standard library only. All output is ASCII English.
 """
 from __future__ import annotations
 
@@ -54,7 +38,7 @@ def _sub(a, b):
 
 
 def recompute(pos: list[list[float]], dt: float) -> list[list[float]]:
-    """从位置重建速度。中心差分 + 三点端点公式，对匀加速精确。"""
+    """Rebuild velocity from position; exact under constant acceleration."""
     n = len(pos)
     out = []
     for i in range(n):
@@ -130,7 +114,7 @@ def main() -> int:
         old = [fr["velocity_rig"] for fr in frames]
         new = recompute(pos, dt)
 
-        # 与现有标注逐帧比，取中位差作为该场景的坏掉程度
+        # Median per-frame difference from the annotation, as a damage score
         gaps = sorted(_norm(_sub(new[i], old[i])) for i in range(n))
         med = gaps[len(gaps) // 2]
         if med > args.threshold:

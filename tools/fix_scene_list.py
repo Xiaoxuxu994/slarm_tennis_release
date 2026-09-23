@@ -1,30 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""把 scene_list 里的场景名补全成 dataloader 要的 JSON 相对路径。
+"""Expand scene names in scene_list into the JSON paths the dataloader opens.
 
-背景
-----
-``datasets.py:192`` 是这么读的::
+datasets.py joins each line onto data_root and opens it, so every line must be the
+annotation JSON's full path relative to data_root. Some export scripts write only
+the scene name, and training then fails at the first read. This does not guess the
+layout: it indexes the JSON files that actually exist under data_root and picks
+the split from the scene_list filename.
 
-    with open(os.path.join(data_root, annotation_path), "r") as f:
-        self.annotations.append(json.load(f))
+Prints only by default; --write edits after saving a .bak.
 
-所以 scene_list 的每一行必须是**标注 JSON 相对 data_root 的完整路径**，例如::
+    python tools/fix_scene_list.py --data-root <root> [--write]
 
-    annotations/ball_catch_6.5cm_triview_catch45/training/scene_5000.json
-
-有些导出脚本只写了场景名（``scene_6200``），那样 open 会直接失败，训练起不来。
-这个脚本不猜路径规律 —— 它扫描 data_root 下真实存在的 JSON，按场景名建索引，
-再用 scene_list 的文件名（_train / _validation / _final_test）挑对应的那个 split。
-
-默认只报告不改动；确认无误后加 --write，改之前会先存 .bak。
-
-用法
-----
-    python tools/fix_scene_list.py --data-root data/slarm_data
-    python tools/fix_scene_list.py --data-root data/slarm_data --write
-
-只依赖标准库。所有输出是纯 ASCII 英文。
+Standard library only. All output is ASCII English.
 """
 from __future__ import annotations
 
@@ -34,8 +22,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# scene_list 文件名里的 split 关键词 -> 目录名里可能出现的子串。
-# catch45 的对应关系是 _train.txt -> training/，所以不能只做等值匹配。
+# Split keyword in the scene_list filename -> substrings that may appear in the
+# directory name. _train.txt maps to training/, so this cannot be equality.
 SPLIT_HINTS = {
     "final_test": ("final_test", "finaltest", "test"),
     "validation": ("validation", "valid", "val"),
@@ -44,10 +32,10 @@ SPLIT_HINTS = {
 
 
 def infer_split(stem: str) -> str | None:
-    """从 scene_list 的文件名推断它属于哪个 split。
+    """Infer the split from the scene_list filename.
 
-    先查 final_test 再查 validation 最后查 train —— "final_test" 里含 "test"，
-    "validation" 里含 "val"，顺序反了会误判。
+    Check final_test, then validation, then train: "final_test" contains "test"
+    and "validation" contains "val", so the order matters.
     """
     low = stem.lower()
     for split in ("final_test", "validation", "train"):
@@ -77,7 +65,7 @@ def main() -> int:
         print(f"[FAIL] no scene_list/*.txt under {root}")
         return 2
 
-    # 索引真实存在的 JSON：场景名 -> [相对 data_root 的路径]
+    # Index the JSONs that exist: scene name -> [path relative to data_root]
     index: dict[str, list[Path]] = defaultdict(list)
     n_json = 0
     for p in root.rglob("*.json"):
@@ -114,13 +102,13 @@ def main() -> int:
                 out.append(line)
                 continue
 
-            # 已经是可用路径就原样保留
+            # Already a usable path
             if raw.endswith(".json") and (root / raw).exists():
                 out.append(raw)
                 already += 1
                 continue
 
-            name = Path(raw).stem                      # scene_6200 或 .../scene_6200.json
+            name = Path(raw).stem                      # scene_6200 or .../scene_6200.json
             cands = index.get(name, [])
             if not cands:
                 out.append(line)

@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""把一批新数据注册进 src/dataset/constants.py。
+"""Register a new dataset in src/dataset/constants.py.
 
-为什么要工具
-------------
-每批新数据都要改三处，而且 dataset 名必须与标注 JSON 的 "dataset" 字段**逐字**一致：
+Three places need the name and it must match the annotation JSON's "dataset"
+field exactly: DATASETS (coordinate mapping), DATASET_DICT (camera_list,
+ref_camera, scene_list) and the training config. Typing it three times turns one
+wrong character into an obscure KeyError, so this reads the real name from the
+data.
 
-  - ``DATASETS``      —— 坐标映射；缺了会在读 opencv2dataset / canonical_to_flu 时 KeyError
-  - ``DATASET_DICT``  —— camera_list / ref_camera / scene_list；缺了会在取相机列表时 KeyError
-  - 训练 config 的 ``dataset:`` 字段
+It also reports what you want to know before training: the camera list, frame
+count, timespan, and whether the name still starts with ball_catch -- datasets.py
+branches on that prefix in four places, and a name that misses it silently skips
+ball trajectory, semantics and MS3 supervision.
 
-手打三次名字，错一个字符就是一个不好查的 KeyError。这个脚本直接从数据里读真名。
+Prints only by default; --write edits constants.py after saving a .bak.
 
-它同时会报出接入前该知道的事实：相机列表、帧数、timespan（从 normalized_time 反推）、
-以及新名字是否仍以 ``ball_catch`` 开头 —— datasets.py 有 4 处
-``startswith("ball_catch")`` 分流，不匹配的话球轨迹/语义/MS3 会被静默跳过。
+    python tools/register_dataset.py --data-root data/slarm_data [--write]
 
-默认只打印不改动；确认无误后加 --write（会先存 constants.py.bak）。
-
-用法
-----
-    python tools/register_dataset.py --data-root data/slarm_data
-    python tools/register_dataset.py --data-root data/slarm_data --write
-
-只依赖标准库。所有输出是纯 ASCII 英文。
+Standard library only. All output is ASCII English.
 """
 from __future__ import annotations
 
@@ -36,7 +30,7 @@ from pathlib import Path
 WORKTREE = Path(__file__).resolve().parent.parent
 CONSTANTS = WORKTREE / "src" / "dataset" / "constants.py"
 
-# Stream25 的冻结契约，用来核对新数据是否同构
+# The frozen Stream25 contract, to check the new data has the same shape
 EXPECTED_CAMERAS = {
     2: ["front_left", "front_right"],
     3: ["front_left", "front_right", "lower_front"],
@@ -44,7 +38,7 @@ EXPECTED_CAMERAS = {
 
 
 def _dict_span(src: str, name: str) -> tuple[int, int]:
-    """返回 `name = {` 的 `{` 位置和与之匹配的 `}` 位置。"""
+    """Return the positions of `name = {` and its matching `}`."""
     start = src.index(name)
     brace = src.index("{", start)
     depth, i = 0, brace
@@ -56,7 +50,7 @@ def _dict_span(src: str, name: str) -> tuple[int, int]:
             if depth == 0:
                 return brace, i
         i += 1
-    raise ValueError(f"{name} 的大括号没有闭合")
+    raise ValueError(f"unbalanced braces in {name}")
 
 
 def main() -> int:
@@ -78,9 +72,9 @@ def main() -> int:
         print(f"[FAIL] no scene_list/*.txt under {root}")
         return 2
 
-    # 一个 data_root 下可以有多批数据（v3_0829 和 0902_fixed 就共用一个 root）。
-    # 不过滤的话下面"取第一条读得出的标注"会读到别的数据集，然后报告
-    # "已经注册过了" —— 一个看起来成功、实际什么都没做的结果。
+    # One data_root can hold several datasets. Without this filter the first
+    # readable annotation may belong to another one, and the tool then reports
+    # "already registered" -- a success that did nothing.
     if args.dataset:
         scoped = [l for l in lists if args.dataset in l.stem]
         if not scoped:
@@ -97,7 +91,7 @@ def main() -> int:
             print("       Pass --dataset <name> so the right one is read.")
             return 2
 
-    # 找第一条能读出来的标注
+    # First annotation that parses
     js = first = None
     for lst in lists:
         for line in lst.read_text(encoding="utf-8").splitlines():

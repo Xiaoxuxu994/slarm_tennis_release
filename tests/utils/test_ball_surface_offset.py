@@ -1,8 +1,8 @@
-"""球前表面 -> 球心 的补偿。
+"""Compensation from the ball's near surface to its centre.
 
-深度图是 z-buffer，球掩码处反投影得到的是球的**前表面**；而 ball_trajectory 的
-position_rig 是球**心**。两边口径不同，差一个恒定的、朝向相机的量，方向正好是
-误差里占 95.5% 的深度方向。
+The depth map is a z-buffer, so unprojecting the ball mask gives the near surface,
+while ball_trajectory's position_rig is the centre. The gap is constant and points
+at the camera -- the direction carrying 95.5% of the error.
 
     pytest tests/utils/test_ball_surface_offset.py -q
 """
@@ -22,31 +22,31 @@ R = 0.065 / 2
 
 
 def test_off_by_default_is_bitwise_identity():
-    """offset=0 必须原样返回，不能有任何浮点扰动 —— 否则历史数字会漂。"""
+    """offset=0 must return the input untouched, or past numbers drift."""
     pos = torch.randn(4, 5, 3)
     out = apply_ball_surface_offset(pos, torch.randn(4, 5, 3), 0.0)
     assert out is pos
 
 
 def test_direction_is_normalized_before_use():
-    """★ 这是这个函数存在的理由。
+    """This is why the function normalises.
 
-    embedders.py:197 的 ``dirs`` 是**未归一化**的（相机系 z 分量恒为 1，配合平面
-    z-depth 用），``viewdirs`` 才是单位向量。直接乘 ``dirs`` 会把补偿量放大
-    ``||dirs||`` 倍 —— 画面角落处 ||dirs|| 可到 1.3，补偿就多推了 30%。
+    ``dirs`` from embedders.py is not a unit vector -- its camera-frame z is 1, to
+    pair with planar z-depth -- so multiplying by it raw scales the offset by
+    ||dirs||, which reaches 1.3 in the corners: 30% too far.
     """
     pos = torch.zeros(1, 3)
     d = torch.tensor([[0.6, 0.8, 1.0]])          # ||d|| = sqrt(2) != 1
     assert float(d.norm()) == pytest.approx(2 ** 0.5)
     out = apply_ball_surface_offset(pos, d, 0.05)
-    assert float((out - pos).norm()) == pytest.approx(0.05, abs=1e-7)   # 不是 0.0707
+    assert float((out - pos).norm()) == pytest.approx(0.05, abs=1e-7)   # not 0.0707
 
 
 def test_moves_away_from_the_camera():
-    """补偿必须把点推**远离**相机（前表面在球心之前），不是拉近。"""
+    """The offset must move the point AWAY from the camera, not towards it."""
     origin = torch.zeros(1, 3)
     d = torch.tensor([[0.0, 0.0, 3.0]])
-    surface = origin + d * 1.0                    # 相机前方 3 m
+    surface = origin + d * 1.0                    # 3 m in front of the camera
     out = apply_ball_surface_offset(surface, d, BALL_SURFACE_COEFFICIENT_MEASURED * R)
     assert float(out.norm()) > float(surface.norm())
     assert float(out.norm() - surface.norm()) == pytest.approx(
@@ -55,21 +55,21 @@ def test_moves_away_from_the_camera():
 
 
 def test_recovers_a_known_centre():
-    """构造一个已知球心 -> 取前表面点 -> 补偿后应回到球心。"""
+    """Known centre -> take the near surface -> compensation returns the centre."""
     origin = torch.zeros(1, 3)
-    unit = torch.tensor([[0.6, 0.0, 0.8]])        # 已归一化
+    unit = torch.tensor([[0.6, 0.0, 0.8]])        # already unit length
     centre = origin + unit * 4.0
     c = BALL_SURFACE_COEFFICIENT_MEASURED
-    surface = centre - unit * (c * R)             # 前表面（按同一系数）
-    out = apply_ball_surface_offset(surface, unit * 7.3, c * R)   # 故意传非单位向量
+    surface = centre - unit * (c * R)             # near surface, same coefficient
+    out = apply_ball_surface_offset(surface, unit * 7.3, c * R)   # deliberately not a unit vector
     torch.testing.assert_close(out, centre, atol=1e-6, rtol=0)
 
 
 def test_the_measured_coefficient_sits_between_the_theoretical_ones():
-    """实测 0.646 应被理论值夹住，说明偏置来源是清楚的。
+    """The measured 0.646 sits below the theoretical values, as expected.
 
-    圆盘均值 -(2/3)r = 0.667，圆盘中位 -r/sqrt(2) = 0.707，最近点 1.0。
-    实测偏低是因为球语义掩码里混了边缘像素（那里 sqrt(r^2-rho^2) 小）。
+    Disc mean is 0.667, disc median 0.707, nearest point 1.0. The measurement comes
+    out lower because the mask includes edge pixels, where the sphere is thin.
     """
     assert BALL_SURFACE_COEFFICIENT_DISC_MEAN == pytest.approx(2 / 3)
     assert BALL_SURFACE_COEFFICIENT_DISC_MEDIAN == pytest.approx(0.70711, abs=1e-5)
@@ -78,7 +78,7 @@ def test_the_measured_coefficient_sits_between_the_theoretical_ones():
 
 
 def test_batched_shapes_are_preserved():
-    """eval 传的是 [V,H,W,3]，形状不能变。"""
+    """The evaluator passes [V,H,W,3]; the shape must survive."""
     pos = torch.randn(3, 8, 9, 3)
     d = torch.randn(3, 8, 9, 3) + 3.0
     out = apply_ball_surface_offset(pos, d, 0.02)

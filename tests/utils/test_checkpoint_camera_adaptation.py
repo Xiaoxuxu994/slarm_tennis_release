@@ -33,7 +33,7 @@ class _Args:
 
 
 def _affine(num_cams: int) -> torch.Tensor:
-    # 相机 i 的那一行全是 i，重排之后一眼能看出留下的是哪几路
+    # Camera i's row is all i, so the surviving rows are obvious after reordering
     return torch.stack([torch.full((EMBED,), float(i)) for i in range(num_cams)]).unsqueeze(0)
 
 
@@ -61,7 +61,7 @@ def test_triview_checkpoint_adapts_to_a_two_view_model():
 
     affine = state["aggregator.affine_token"]
     assert affine.shape == model_state["aggregator.affine_token"].shape
-    # front_left / front_right 留下，lower_front 丢掉 —— 按名字，不是按位置
+    # front_left / front_right survive and lower_front is dropped, by name not position
     assert _rows(affine) == [0.0, 1.0]
     assert report["camera_action"] == "remap"
     assert report["indices"] == [0, 1]
@@ -70,7 +70,7 @@ def test_triview_checkpoint_adapts_to_a_two_view_model():
 
 
 class _TwoViewStub(torch.nn.Module):
-    """key 与真模型同名的最小模块，用来真的走一遍 load_state_dict。"""
+    """A minimal module with the real key names, to actually run load_state_dict."""
 
     def __init__(self):
         super().__init__()
@@ -86,7 +86,7 @@ def test_raw_load_fails_but_the_prepared_state_loads():
         [("aggregator.affine_token", checkpoint["model"]["aggregator.affine_token"])]
     )
 
-    # 这就是 check_model_init.py 以前的做法，报出来像是 ckpt 不兼容
+    # What check_model_init.py used to do; it reported a usable checkpoint as broken
     with pytest.raises(RuntimeError, match="size mismatch"):
         module.load_state_dict(raw, strict=False)
 
@@ -104,7 +104,7 @@ def test_raw_load_fails_but_the_prepared_state_loads():
 
 
 def test_stereo_checkpoint_still_expands_to_three_views():
-    """既有路径不能被破坏：lower_front 用两路均值初始化。"""
+    """The existing path still works: lower_front starts as the mean of the two."""
     checkpoint = {"model": _state(2, grid=4), "args": _Args(2)}
     model_state = _state(3, grid=4)
 
@@ -132,7 +132,7 @@ def test_same_camera_count_leaves_the_token_untouched():
 
 
 def test_resolution_dependent_buffers_come_from_the_target_model():
-    """320x240 的 ckpt 初始化 480x640 的 run：plucker 网格必须取目标模型的。"""
+    """A 320x240 checkpoint into a 480x640 run: the plucker grid must be the model's."""
     checkpoint = {"model": _state(3, grid=4), "args": _Args(3)}
     model_state = _state(2, grid=8)
 

@@ -1,15 +1,11 @@
-"""球的可视化：放大窗口、只含球的 PLY、预测/真值标记球。
+"""Ball visualization: the zoom panel, the ball-only PLY, and the marker spheres.
 
-存在的理由是一个尺度问题。球直径 2.66 px，面积约 5.6 px，占 320x240 画面的
-0.007%；整个球只由约 100 个高斯构成，而场景有 138 万个。所以：
-
-  - 全幅视频里，球的几何对不对看起来是一样的 → 需要放大窗口
-  - 全场景 PLY 里，球要在 50 万点里找 → 需要只含球的那一份
-  - 三维误差只能读数字 → 需要预测和真值两个标记球
-
-三件事各有一个会静默出错的地方，这份测试盯的就是那三个点。
-
-    pytest tests/scripts/test_ball_visualization.py -q
+All three exist because of scale. The ball is 2.66 px across, 0.007% of a 320x240
+frame, and about 100 gaussians against the scene's 1.4 million -- so in a full
+frame its geometry looks the same whether it is right or wrong, in a full PLY it
+has to be found among half a million points, and a 3D error can only be read as a
+number. Each of the three has one place where it goes wrong without an error, and
+those are what these tests hold.
 """
 from __future__ import annotations
 
@@ -36,7 +32,7 @@ def _function(source: str, name: str) -> ast.FunctionDef:
                 if isinstance(node, ast.FunctionDef) and node.name == name)
 
 
-# ---------------------------------------------------------------- 黄色定位框
+# ---------------------------------------------------------------- the yellow locator box
 
 BOX = _constant(RENDER_SRC.read_text(), "BALL_BOX_PX")
 
@@ -135,7 +131,7 @@ def test_the_zoom_row_is_opt_in():
     assert "if zoom_full is not None:" in source, "the frame must assemble without it"
 
 
-# ---------------------------------------------------------------- 放大窗口
+# ---------------------------------------------------------------- the zoom panel
 
 CROP_W = _constant(RENDER_SRC.read_text(), "BALL_ZOOM_CROP_W")
 CROP_H = _constant(RENDER_SRC.read_text(), "BALL_ZOOM_CROP_H")
@@ -217,7 +213,7 @@ def test_zoom_centres_on_truth_when_there_is_one():
     assert index_gt < index_pred, "truth has to be tried first"
 
 
-# ---------------------------------------------------------------- 标记球
+# ---------------------------------------------------------------- the marker spheres
 
 MARKER_POINTS = _constant(EXPORT_SRC.read_text(), "MARKER_POINTS")
 
@@ -267,7 +263,7 @@ def test_markers_are_keyed_by_frame_number_on_both_sides():
     assert "ply_markers[int(marker_frames[index])]" in RENDER_SRC.read_text()
 
 
-# ---------------------------------------------------------------- 只含球的 PLY
+# ---------------------------------------------------------------- the ball-only PLY
 
 def test_ball_only_export_filters_after_the_validity_mask():
     """The labels are per Gaussian before filtering, so they must be indexed by
@@ -289,7 +285,7 @@ def test_semantic_comes_from_the_context_pixels_not_the_targets():
     assert 'input_dict.get("context_task_semantic")' in source
 
 
-# ---------------------------------------------------------------- 三维轨迹图
+# ---------------------------------------------------------------- the 3D trajectory plot
 
 TRACK_SRC = ROOT / "tools" / "export_ball_track.py"
 

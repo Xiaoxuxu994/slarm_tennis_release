@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""逐帧检查球轨迹：加速度是不是恒为重力，速度和位置是不是自洽。
+"""Check the ball trajectory frame by frame: is acceleration always gravity, and
+are position and velocity consistent with each other?
 
-为什么要逐帧
-------------
-check_dataset_contract 的重力检查取的是**所有帧加速度的均值**。末尾一两帧异常
-（球落地、被接住、轨迹被截断）会被平均掉，那条检查照样通过 —— 这是它的盲点。
+check_dataset_contract averages acceleration over all frames, so one or two bad
+frames at the end -- the ball landing, being caught, the clip being cut -- average
+away and it still passes. That is its blind spot, and the distinction matters:
 
-而这个区别决定了问题的性质：
+  - gravity everywhere, velocity off   -> annotation only, recompute the velocity
+  - a few frames jump                  -> the ball landed inside the 25 frames, and
+                                          the ballistic extrapolation the evaluator
+                                          uses does not hold on those scenes at all
+  - gravity is not -9.81 anywhere      -> timespan or frame convention is wrong
 
-  - 全程加速度都是 -9.81，只是速度标注偏了  -> 纯标注问题，重算速度即可
-  - 某几帧加速度突变                        -> 球在 25 帧内落地/被接住了。
-    那些场景上 pos15 + v*dt + 0.5*g*dt^2 这个外推公式**本身就不成立**，
-    落点的 GT 定义和评测口径都要重新讨论，不是修一下标注能解决的
-  - 加速度整体不是 -9.81                    -> timespan 或坐标系错，速度是次生问题
+    python tools/inspect_trajectory.py --data-root <root> [--scene <name>]
 
-用法
-----
-    python tools/inspect_trajectory.py --data-root data/slarm_data
-    python tools/inspect_trajectory.py --data-root data/slarm_data --scene scene_6200
-
-不给 --scene 时扫全部场景并汇总；给了则打印那个场景的逐帧表。
-只依赖标准库。所有输出是纯 ASCII 英文。
+Standard library only. All output is ASCII English.
 """
 from __future__ import annotations
 
@@ -31,8 +25,8 @@ import math
 from pathlib import Path
 
 GRAVITY_Z = -9.81
-# 逐帧加速度偏离重力多少算“突变”。弹道数值噪声远小于此；
-# 一次落地反弹在一帧内会产生几十到几百 m/s^2 的加速度。
+# How far per-frame acceleration may stray from gravity before it counts as a
+# jump. Ballistic noise is far below this; a bounce produces tens to hundreds.
 JUMP_TOL = 3.0
 
 
@@ -47,8 +41,8 @@ def _load(p: Path):
 
 
 def _dt_uniformity(t):
-    """时间戳是否等间隔。不等间隔的话，任何用固定 dt 的推导都是错的 ——
-    这要在怀疑位置或速度之前先排除。"""
+    """Are the timestamps evenly spaced? If not, every fixed-dt derivation below
+    is wrong, so rule this out before suspecting position or velocity."""
     d = [t[i + 1] - t[i] for i in range(len(t) - 1)]
     lo, hi = min(d), max(d)
     mean = sum(d) / len(d)
@@ -56,9 +50,8 @@ def _dt_uniformity(t):
 
 
 def _accel_from_velocity(V, dt):
-    """速度的一阶差分。位置的二阶差分把噪声放大 sqrt(6)/dt^2（这里约 2200 倍），
-    速度的一阶差分只放大 sqrt(2)/dt（约 42 倍）—— 相差 50 倍。
-    所以两条路算出来的加速度谁更接近重力，就说明谁那一侧更干净。"""
+    """First difference of velocity. Position's second difference amplifies noise
+    about 50x more, so whichever route lands closer to gravity is the clean one."""
     n = len(V)
     out = [None] * n
     for i in range(n - 1):
@@ -67,7 +60,7 @@ def _accel_from_velocity(V, dt):
 
 
 def _accels(P, dt):
-    """逐帧加速度（位置二阶差分）。首末帧无定义，返回 None。"""
+    """Per-frame acceleration from the second difference; ends are None."""
     n = len(P)
     out = [None] * n
     for i in range(1, n - 1):
@@ -76,7 +69,7 @@ def _accels(P, dt):
 
 
 def _gaps(P, V, dt):
-    """逐帧 |A - B|：A 是位置差分推的平均速度，B 是两帧标注速度的均值。"""
+    """Per-frame |A - B|: A from differencing positions, B the annotated mean."""
     n = len(P)
     out = [None] * n
     for i in range(n - 1):

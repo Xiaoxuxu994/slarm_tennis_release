@@ -1,20 +1,15 @@
-"""落点误差按环轴的分解。
+"""Decomposing the landing error along the catch-ring axis.
 
-存在的理由。接球环放在预测点上等球来，而且正对来球，所以它的轴就是接球时刻的
-球速方向。误差沿这个轴偏，球的真实轨迹**照样穿过环心**，只是早到或晚到；只有
-垂直于这个轴的分量才会让球从环口偏开。
+The ring faces the incoming ball, so its axis is the ball's velocity direction at
+the catch. Error along that axis still passes through the ring, just early or
+late; only the perpendicular part moves the ball off the opening. catch_position
+uses the 3D norm and so counts axial error as a miss, making any success rate from
+it a lower bound, while catch_position_inplane is the geometrically honest one.
 
-`catch_position` 用的是三维模，把轴向也当成了打偏，所以由它算出来的成功率是
-**下界**。`catch_position_inplane` 才是几何上诚实的那个。
-
-这份测试盯三件事：
-  1. 分解本身正确（纯轴向 -> 横向为 0；纯横向 -> 轴向为 0；勾股恒等）
-  2. 一个纯轴向的大误差会被 3D 判据误判成"没进"，而平面判据判"进"
-     —— 这正是"下界"这个说法的全部内容
-  3. 新指标在三处都注册了：指标名、报表行、跨 ckpt 对照表
-     （漏任何一处，指标会被算出来然后丢掉，不报错）
-
-    pytest tests/scripts/test_catch_inplane_decomposition.py -q
+Checked here: the decomposition itself, that a large purely axial error is a miss
+by the 3D criterion and a hit in plane, and that the new metric is registered in
+all three places -- name, report row, cross-checkpoint table -- since missing any
+one computes it and then throws it away without an error.
 """
 from __future__ import annotations
 

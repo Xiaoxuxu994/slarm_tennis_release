@@ -32,7 +32,7 @@ def _restore_default():
 def test_default_is_the_frozen_triview_order():
     assert get_camera_order() == TRIVIEW
     assert get_required_eval_scopes() == ("aggregate",) + TRIVIEW
-    # 冻结常量保持不动：已发布的 gate 报告和旧测试按它们比对
+    # The frozen constants do not move: published gate reports compare against them
     assert CAMERA_ORDER == TRIVIEW
     assert DEFAULT_CAMERA_ORDER == TRIVIEW
     assert REQUIRED_EVAL_SCOPES == ("aggregate",) + TRIVIEW
@@ -71,7 +71,7 @@ def test_worst_ratio_follows_the_active_scope_list():
     stereo_scopes = ("aggregate",) + STEREO
     report = _passing_report(stereo_scopes)
 
-    # 默认三视图口径下这份双视图报告缺 lower_front，必须判为不可比
+    # Under the tri-view default this two-view report lacks lower_front
     assert checkpoint_report_worst_ratio(report) is None
 
     set_camera_order(STEREO)
@@ -83,5 +83,5 @@ def test_triview_report_is_rejected_once_two_views_are_active():
     assert checkpoint_report_worst_ratio(report) == pytest.approx(0.9)
 
     set_camera_order(STEREO)
-    # 多出来的 lower_front scope 说明报告不是本次口径产的，同样不可比
+    # An extra lower_front scope means the report came from a different setup
     assert checkpoint_report_worst_ratio(report) is None
