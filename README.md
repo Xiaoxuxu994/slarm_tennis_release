@@ -179,9 +179,16 @@ pytest tests -q
 python -c "import torch, gsplat; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-全部测试都不读数据集、不需要 GPU，几十秒内跑完。**这是判断环境装没装对的第一道关**，
-也是改完代码之后的回归网。跑不过就别往下走。第二条期望输出 `2.3.1+cu121 True`，
-`gsplat` import 不报错说明编译成功了。
+17 个文件、197 条用例，几十秒跑完。整个测试链路只依赖 `torch` / `numpy` / `pytest`
+/ `yaml` —— 不读数据集、不碰 CUDA，**也不 import gsplat**（要碰模型的测试一律从
+AST 里把单个函数取出来执行，正是为了不把 gsplat 拉进来）。
+
+所以这两条命令能分开诊断两件事：
+
+- `pytest` 挂了 = 代码或 torch/numpy 环境有问题
+- `pytest` 过了但第二条挂了 = 只是 gsplat 没编译成功，改 `CUDA_HOME` 重装那一条即可
+
+第二条期望输出 `2.3.1+cu121 True`。两条都过再往下走。
 
 ## 7. 数据接入
 
