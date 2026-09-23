@@ -97,7 +97,7 @@ def main() -> int:
     if agg is not None and hasattr(agg, "patch_start_idx"):
         flags = []
         for name in ("use_time_token", "num_motion_tokens", "use_affine_token",
-                     "use_sky_token", "use_ball_token"):
+                     "use_sky_token"):
             val = getattr(agg, name, None)
             if val:
                 flags.append(f"{name}={val}")
@@ -213,26 +213,6 @@ def main() -> int:
             if name in miss and id(p) in by_id:
                 print(f"    {by_id[id(p)]:<5} lr="
                       f"{(trunk_lr if by_id[id(p)] == 'trunk' else head_lr):.2e}  {name}")
-
-    # ---------------- freeze ----------------
-    if getattr(args, "ball_token_freeze_backbone", False):
-        print("")
-        print("-" * 78)
-        print("ball_token_freeze_backbone is ON")
-        print("-" * 78)
-        prefixes = ("ball_query", "ball_block", "ball_head",
-                    "ball_token_norm", "aggregator.ball_token", "ball_pos_cross", "ball_temporal")
-        trainable = [(n, p.numel()) for n, p in model.named_parameters()
-                     if n.startswith(prefixes)]
-        n_tr = sum(c for _, c in trainable)
-        print(f"  trainable: {n_tr / 1e6:.4f}M across {len(trainable)} tensors")
-        for n, c in trainable:
-            print(f"    {n}  ({c})")
-        if getattr(args, "use_ball_token_intrunk", False):
-            print("")
-            print("  WARNING: freeze combined with the in-trunk ball token. Putting the token")
-            print("  inside the trunk exists so gradients reach the backbone; freezing the")
-            print("  backbone turns it into a probe weaker than the external variant.")
 
     print("")
     print("=" * 78)

@@ -67,23 +67,8 @@ from src.dataset.stream25 import (
 #   秒）时才需要绝对帧号 = 15 + offset。
 TERMINAL_TARGET_INDEX = STREAM25_CONTEXT_FRAMES[-1]
 
-# ball token 的并列落点指标名（不进 ACCEPTANCE_TABLE，只做对照）。
-BALL_TOKEN_METRIC_NAMES = (
-    "frame24_position_balltoken",
-    "ball_pos15_error",
-    "ball_vel15_error",
-    # 多帧弹道拟合读出：用 ball_prefix_states 的历史位置 + 已知重力反解 (pos15, v15)，
-    # 代替 head 直接回归速度。只在 ball_prefix_supervision 打开的 ckpt 上出现。
-    "frame24_position_balltoken_fit",
-    "ball_pos15_error_balltoken_fit",
-    "ball_vel15_error_balltoken_fit",
-    # 逐 prefix 帧的位置误差。决定拟合该用几帧：早期帧劣化超过后期约 1.6 倍时，
-    # 缩短时间跨度的代价就盖过了去掉坏样本的好处（见 fit_ballistic_state 的说明）。
-    "ball_prefix_pos_error_frame0",
-    "ball_prefix_pos_error_frame3",
-    "ball_prefix_pos_error_frame6",
-    "ball_prefix_pos_error_frame9",
-    "ball_prefix_pos_error_frame12",
+# 并列的落点读出（不进 ACCEPTANCE_TABLE，只做对照）。
+SIDE_METRIC_NAMES = (
     # 像素路径的多帧弹道拟合读出：把 frame 0/3/6/9/12/15 各自渲染出的球心拿去拟合，
     # 代替 MS3 头直接预测的 v15。不需要 ball token，任何 ckpt 都有。
     "frame24_position_fit",
@@ -95,21 +80,15 @@ BALL_TOKEN_METRIC_NAMES = (
     "pixel_pos_error_frame9", "pixel_pos_error_frame12", "pixel_pos_error_frame15",
     "pixel_pos_error_constant_m",
     "pixel_pos_error_scatter_m",
-    # 逐帧速度读出去重力后平均（零训练的第三个估计器）。spread 接近 0 = 各帧读出
-    # 实质相同，平均没有空间；spread 大且误差下降 = 逐帧读出带独立信息。
-    "frame24_position_balltoken_vavg",
-    "ball_vel15_error_balltoken_vavg",
-    "ball_vel15_spread_balltoken",
     # 接球帧落点。★ 唯一跨 context offset 可比的落点指标：frame24_* 的外推时长
     # 随窗口滑动而变，catch_* 固定打在绝对时刻 stream25_catch_frame 上。
     "catch_position",
     "catch_position_inplane",
     "catch_position_axial",
-    "catch_position_balltoken",
     "catch_horizon_s",
 )
 # 这些指标跨场景聚合时，p95 子键取场景间的 95 分位（与 frame24_position 同口径）。
-_P95_ACROSS_SCENES = ("frame24_position",) + BALL_TOKEN_METRIC_NAMES
+_P95_ACROSS_SCENES = ("frame24_position",) + SIDE_METRIC_NAMES
 
 FINAL_TEST_SENTINEL_DIR = str(
     WORKTREE / "data" / "SLARM_data" / ".stream25_final_test_registry"
@@ -267,139 +246,6 @@ def apply_scoped_acceptance_gates(
         "all_gates_pass": all_pass,
         "worst_ratio": max(ratios) if ratios else float("inf"),
     }
-
-
-def compute_balltoken_frame24_metrics(
-    ball_pos15: Optional[torch.Tensor],
-    ball_v15: Optional[torch.Tensor],
-    data_dict: Dict,
-    gt_pos24: torch.Tensor,
-    *,
-    dt: float,
-    prefix_states: Optional[torch.Tensor] = None,
-    timespan: float = 0.8,
-    fit_frames: Optional[Sequence[int]] = None,
-    context_offset: int = 0,
-) -> Optional[Dict[str, float]]:
-    """Score the internal ball token against terminal truth and the landing.
-
-    ``ball_pos15``/``ball_v15`` are regressed directly in the scene-fixed rig frame
-    (same frame the ``ball_position_rig`` supervision lives in), so no
-    ``canonical_to_rig`` transform applies here — unlike the per-pixel path, which
-    reads Gaussian means in the canonical frame. Frame 24 uses the physical
-    extrapolation ``pos15 + v15*dt + 0.5*g*dt**2``: the ball token supplies no
-    acceleration, and gravity is known.
-
-    Returns ``None`` when the model has no ball token, so the metric is simply
-    absent rather than reported as a failure.
-    """
-    if ball_pos15 is None or ball_v15 is None:
-        return None
-    pos15 = ball_pos15.reshape(-1)[:3].float().cpu()
-    v15 = ball_v15.reshape(-1)[:3].float().cpu()
-    if not (torch.isfinite(pos15).all() and torch.isfinite(v15).all()):
-        return None
-    gravity = pos15.new_tensor(MS3_GRAVITY_RIG)
-    pred_pos24 = integrate_frame24_position_physics(pos15, v15, dt, gravity)
-    metrics = {
-        "frame24_position_balltoken": float((pred_pos24 - gt_pos24).norm().item()),
-    }
-    # frame-15 truth is optional: ball_velocity_rig in particular is not emitted by
-    # every dataset, so those two diagnostics drop out instead of failing the scene.
-    # 目标列表下标，不加 offset —— 见 TERMINAL_TARGET_INDEX 的说明。
-    terminal = TERMINAL_TARGET_INDEX
-    gt_pos15 = data_dict.get("ball_position_rig")
-    if gt_pos15 is not None:
-        gt = gt_pos15[0, terminal].float().cpu()
-        metrics["ball_pos15_error"] = float((pos15 - gt).norm().item())
-    gt_v15 = data_dict.get("ball_velocity_rig")
-    if gt_v15 is not None:
-        gt = gt_v15[0, terminal].float().cpu()
-        metrics["ball_vel15_error"] = float((v15 - gt).norm().item())
-    metrics.update(
-        _balltoken_fit_metrics(prefix_states, data_dict, gt_pos24,
-                               dt=dt, timespan=timespan, fit_frames=fit_frames,
-                               context_offset=context_offset)
-    )
-    return metrics
-
-
-def _balltoken_fit_metrics(prefix_states, data_dict, gt_pos24, *,
-                           dt: float, timespan: float,
-                           fit_frames: Optional[Sequence[int]] = None,
-                           context_offset: int = 0) -> Dict[str, float]:
-    """Refit (pos15, v15) from the causal prefix positions instead of regressing v15.
-
-    ``ball_prefix_states`` is ``[1, T, 6]`` -- the readout head applied to each
-    observation's pooled ball token, so entry ``i`` is the state the model would
-    have emitted online after seeing observations ``0..i``. Nothing here uses a
-    later observation than the one being read, so this stays valid for streaming.
-
-    Returns an empty dict when the checkpoint has no prefix states, which keeps
-    the metric key set a function of the config alone.
-    """
-    out: Dict[str, float] = {}
-    if prefix_states is None:
-        return out
-    states = prefix_states.reshape(-1, prefix_states.shape[-1])[:, :6].float().cpu()
-    context_time = data_dict.get("context_time")
-    if context_time is None or states.shape[0] < 2 or not torch.isfinite(states).all():
-        return out
-    # normalized time -> seconds, measured from the terminal context frame
-    times = (context_time[0, :, 0] if context_time.dim() == 3 else context_time[0]).float().cpu()
-    times = (times - times[-1]) * float(timespan)
-    if times.shape[0] != states.shape[0]:
-        return out
-
-    gt_pos15 = data_dict.get("ball_position_rig")
-    if gt_pos15 is not None:
-        truth = gt_pos15[0].float().cpu()
-        for step, frame in enumerate(STREAM25_CONTEXT_FRAMES[: states.shape[0] - 1]):
-            error = float((states[step, :3] - truth[frame]).norm().item())
-            if math.isfinite(error):
-                out[f"ball_prefix_pos_error_frame{frame}"] = error
-
-    # (c) 第三个零训练估计器：每一帧的速度读出各自去掉重力，再平均。
-    #     弹道下 v(t) = v15 + g*(t - t15)，所以 v15 = v(t) - g*(t - t15)。
-    #     frames 6/9/12 的速度是被真实监督的（stream25_losses.py 的 ball_prefix_vel，
-    #     权重 0.25/0.5/1.0），frame 15 由主 ball_vel 损失监督；frames 0/3 没有速度
-    #     监督，所以排除在外。
-    #     ball_vel15_spread_balltoken 是这几个估计之间的散布：接近 0 说明各帧读出
-    #     实质相同，平均拿不到任何东西；散布大才有平均的空间。
-    gravity_vec = states.new_tensor(MS3_GRAVITY_RIG)
-    supervised = [i for i, frame in enumerate(STREAM25_CONTEXT_FRAMES[: states.shape[0]])
-                  if frame >= 6]
-    if len(supervised) >= 2:
-        estimates = states[supervised, 3:] - gravity_vec * times[supervised, None]
-        averaged = estimates.mean(dim=0)
-        out["ball_vel15_spread_balltoken"] = float(
-            (estimates - averaged).norm(dim=-1).mean().item())
-        gt_v = data_dict.get("ball_velocity_rig")
-        if gt_v is not None:
-            out["ball_vel15_error_balltoken_vavg"] = float(
-                (averaged - gt_v[0, TERMINAL_TARGET_INDEX].float().cpu()).norm().item())
-        predicted = integrate_frame24_position_physics(
-            states[-1, :3], averaged, dt, gravity_vec)
-        out["frame24_position_balltoken_vavg"] = float((predicted - gt_pos24).norm().item())
-
-    selected = list(range(states.shape[0])) if not fit_frames else [
-        STREAM25_CONTEXT_FRAMES.index(frame) for frame in fit_frames
-    ]
-    if len(selected) < 2:
-        return out
-    gravity = states.new_tensor(MS3_GRAVITY_RIG)
-    fitted = fit_ballistic_state(states[selected, :3], times[selected], gravity)
-    pos15, v15 = fitted[:3], fitted[3:]
-    pred_pos24 = integrate_frame24_position_physics(pos15, v15, dt, gravity)
-    out["frame24_position_balltoken_fit"] = float((pred_pos24 - gt_pos24).norm().item())
-    if gt_pos15 is not None:
-        out["ball_pos15_error_balltoken_fit"] = float(
-            (pos15 - gt_pos15[0, TERMINAL_TARGET_INDEX].float().cpu()).norm().item())
-    gt_v15 = data_dict.get("ball_velocity_rig")
-    if gt_v15 is not None:
-        out["ball_vel15_error_balltoken_fit"] = float(
-            (v15 - gt_v15[0, TERMINAL_TARGET_INDEX].float().cpu()).norm().item())
-    return out
 
 
 def rendered_ball_positions_per_view(
@@ -747,7 +593,7 @@ def evaluate_scene(
     timespan: float = 0.8,
     *,
     ball_surface_offset: float = 0.0,
-    balltoken_fit_frames: Optional[Sequence[int]] = None,
+    fit_frames: Optional[Sequence[int]] = None,
     context_offset: int = 0,
     catch_frame: int = 0,
 ) -> Dict[str, Any]:
@@ -773,7 +619,7 @@ def evaluate_scene(
         target_ray_origins=target_rays["origins"],
         target_ray_directions=target_rays["dirs"],
         ball_surface_offset=ball_surface_offset,
-        balltoken_fit_frames=balltoken_fit_frames,
+        fit_frames=fit_frames,
         context_offset=context_offset,
         catch_frame=catch_frame,
     )
@@ -790,7 +636,6 @@ def _summarize_scene_scope(
     context_values_by_view: Dict[str, List[List[float]]],
     frame24_errors: List[float],
     eye_indices: tuple[int, ...],
-    balltoken_metrics: Optional[Dict[str, float]] = None,
     history_fit_metrics: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     selected = [record for record in records if record["eye"] in eye_indices]
@@ -888,8 +733,8 @@ def _summarize_scene_scope(
     # 所以 aggregate 与三个具名视图 scope 记录同一个数。单场景内 median==p95（只有一个样本）；
     # 分位数的差异在 _aggregate_scene_scope_metrics 的跨场景聚合里才产生。
     # 没有 ball token 时不写入这些键，指标在报告中直接缺席，而不是记成 nan/失败。
-    combined_scalar_metrics = {**(balltoken_metrics or {}), **(history_fit_metrics or {})}
-    for name in BALL_TOKEN_METRIC_NAMES:
+    combined_scalar_metrics = dict(history_fit_metrics or {})
+    for name in SIDE_METRIC_NAMES:
         value = combined_scalar_metrics.get(name)
         if value is None or not math.isfinite(value):
             continue
@@ -907,7 +752,7 @@ def compute_stream25_scene_metrics(
     target_ray_origins: torch.Tensor,
     target_ray_directions: torch.Tensor,
     ball_surface_offset: float = 0.0,
-    balltoken_fit_frames: Optional[Sequence[int]] = None,
+    fit_frames: Optional[Sequence[int]] = None,
     context_offset: int = 0,
     catch_frame: int = 0,
 ) -> Dict[str, Any]:
@@ -1091,22 +936,10 @@ def compute_stream25_scene_metrics(
         else data_dict["ball_velocity_rig"][0, TERMINAL_TARGET_INDEX].float().cpu(),
         dt=dt, timespan=timespan,
         ball_surface_offset=ball_surface_offset,
-        fit_frames=balltoken_fit_frames,
+        fit_frames=fit_frames,
         context_offset=context_offset,
     )
 
-    # 并列的 ball token 落点（仅当模型带内建 ball token 时存在）。
-    balltoken_metrics = compute_balltoken_frame24_metrics(
-        predictions.get("ball_pos15"),
-        predictions.get("ball_v15"),
-        data_dict,
-        gt_pos24,
-        dt=dt,
-        prefix_states=predictions.get("ball_prefix_states"),
-        timespan=timespan,
-        fit_frames=balltoken_fit_frames,
-        context_offset=context_offset,
-    )
 
     # ---- catch-frame landing: the only number comparable across window offsets --
     # frame24_* extrapolates from the terminal observation to a fixed TARGET, so
@@ -1180,14 +1013,6 @@ def compute_stream25_scene_metrics(
                 lateral.append(float((error - along * axis).norm().item()))
             catch_metrics["catch_position_inplane"] = max(lateral)
             catch_metrics["catch_position_axial"] = max(axial)
-        _bt_p, _bt_v = predictions.get("ball_pos15"), predictions.get("ball_v15")
-        if _bt_p is not None and _bt_v is not None:
-            _p = _bt_p.reshape(-1)[:3].float().cpu()
-            _v = _bt_v.reshape(-1)[:3].float().cpu()
-            if torch.isfinite(_p).all() and torch.isfinite(_v).all():
-                catch_metrics["catch_position_balltoken"] = float(
-                    (integrate_frame24_position_physics(_p, _v, catch_dt, gravity)
-                     - gt_catch).norm().item())
     # Flat scalar dicts are merged wholesale at _summarize_scene_scope, so folding
     # the catch metrics in here needs no new plumbing.
     history_fit_metrics.update(catch_metrics)
@@ -1205,7 +1030,6 @@ def compute_stream25_scene_metrics(
             context_values_by_view,
             frame24_errors,
             eye_indices,
-            balltoken_metrics,
             history_fit_metrics,
         )
         for scope, eye_indices in scope_eye_indices.items()
@@ -1251,22 +1075,6 @@ def compute_stream25_scene_metrics(
         "considered_frame_eyes": len(records),
         "visible_ball_frame_eyes": sum(r["ball_visible"] for r in records),
     }
-    # 只有带内建 ball token 的模型才多出这个键，模型没有时 evaluation.json 与改动前逐字节一致。
-    if balltoken_metrics:
-        scene_result["balltoken"] = balltoken_metrics
-    if predictions.get("ball_v15_residual") is not None:
-        from src.utils.ball_residual_diagnostics import residual_diagnostics
-        diagnostics = residual_diagnostics(
-            predictions["ball_v15_base"], predictions["ball_v15_residual"], predictions["ball_v15"],
-            # 下标用 TERMINAL_TARGET_INDEX（目标序），杠杆臂用 terminal_frame
-            # （绝对帧号）—— 两者在 offset>0 时不同，混用会越界。
-            data_dict["ball_velocity_rig"][:, TERMINAL_TARGET_INDEX].to(predictions["ball_v15"]),
-            predictions["ball_pos15"],
-            data_dict["ball_position_rig"][:, TERMINAL_TARGET_INDEX].to(predictions["ball_pos15"]),
-            dt24=dt,
-            dt45=(int(catch_frame or 45) - terminal_frame) * float(timespan)
-                 / (STREAM25_ALL_TARGET_FRAMES[-1] - STREAM25_ALL_TARGET_FRAMES[0]))
-        scene_result["velocity_residual"] = {key: float(value[0]) for key, value in diagnostics.items()}
     return scene_result
 
 
@@ -1371,7 +1179,7 @@ def run_evaluation(
     num_workers: int = 8,
     ball_radius_compensation: float = 0.0,
     ball_radius: Optional[float] = None,
-    balltoken_fit_frames: Optional[Sequence[int]] = None,
+    fit_frames: Optional[Sequence[int]] = None,
     context_offset: int = 0,
 ) -> Dict[str, Any]:
     """Run full evaluation on a split. For final-test, require a selection report."""
@@ -1536,20 +1344,12 @@ def run_evaluation(
             scene_result = evaluate_scene(
                 model, prepared, torch_device, args.timespan,
                 ball_surface_offset=ball_surface_offset,
-                balltoken_fit_frames=balltoken_fit_frames,
+                fit_frames=fit_frames,
                 context_offset=context_offset,
                 catch_frame=catch_frame,
             )
             scene_result["scene_index"] = index
             scene_result["scene_name"] = input_dict.get("scene_name", [str(index)])[0]
-            if "velocity_residual" in scene_result:
-                from src.utils.ball_residual_diagnostics import velocity_unit_diagnostics
-                from src.utils.stream25_losses import ball_vel_scale_from_timespan
-                velocity_scale = float(getattr(args, "stream25_ball_vel_scale", None)
-                                       or ball_vel_scale_from_timespan(args.timespan))
-                diagnostic = scene_result["velocity_residual"]
-                diagnostic.update(velocity_unit_diagnostics(diagnostic, velocity_scale))
-                diagnostic["velocity_loss_scale_mps"] = velocity_scale
             scene_results.append(_compact_scene_result(scene_result))
             print(
                 f"Evaluated Stream25 {split} scene {index + 1}/{len(dataset)}",
@@ -1568,7 +1368,7 @@ def run_evaluation(
         output_json=output_json,
         output_markdown=output_markdown,
         ball_surface_offset=ball_surface_offset,
-        balltoken_fit_frames=balltoken_fit_frames,
+        fit_frames=fit_frames,
         ball_radius=ball_radius,
         ball_radius_compensation=ball_radius_compensation,
         context_offset=context_offset,
@@ -1588,7 +1388,7 @@ def _finalize_and_write(
     output_json,
     output_markdown,
     ball_surface_offset=0.0,
-    balltoken_fit_frames=None,
+    fit_frames=None,
     ball_radius=None,
     ball_radius_compensation=0.0,
     context_offset=0,
@@ -1646,7 +1446,7 @@ def _finalize_and_write(
         "ball_surface_offset_m": ball_surface_offset,
         "ball_radius_m": ball_radius,
         "ball_radius_compensation": ball_radius_compensation,
-        "balltoken_fit_frames": list(balltoken_fit_frames) if balltoken_fit_frames else None,
+        "fit_frames": list(fit_frames) if fit_frames else None,
         # Which window this run observed. A non-zero offset moves the terminal
         # observation, so frame24_* is measured over a different horizon and must
         # not be compared across offsets -- catch_position is the one that can.
@@ -1664,27 +1464,7 @@ def _finalize_and_write(
         "overall": "PASS" if gate_result["all_gates_pass"] else "FAIL",
     }
 
-    # ball token 的并列落点：只在模型带内建 ball token 时才有这些键。它不参与
-    # acceptance gate（ACCEPTANCE_TABLE 未收录），所以 all_gates_pass 与历史口径可比。
-    if "frame24_position_balltoken" in metrics:
-        result["frame24_position_balltoken_method"] = (
-            "ball_token_pos15_v15_gravity_extrapolation_rig"
-        )
-
     result = _json_safe(result)
-    residual_scenes = [scene["velocity_residual"] for scene in scene_results if "velocity_residual" in scene]
-    if residual_scenes:
-        import numpy as np
-        result["velocity_residual"] = {}
-        for key in residual_scenes[0]:
-            values = [scene[key] for scene in residual_scenes
-                      if math.isfinite(scene[key]) and (key != "cosine" or scene["cosine_valid"] > 0)]
-            result["velocity_residual"][key] = {
-                "median": float(np.median(values)) if values else None,
-                "p95": float(np.percentile(values, 95)) if values else None,
-                "mean": float(np.mean(values)) if values else None,
-                "n_valid": len(values), "n_total": len(scene_results),
-            }
     result = _json_safe(result)
     if output_json:
         with open(output_json, "w") as f:
@@ -1752,13 +1532,14 @@ if __name__ == "__main__":
                              f"{BALL_SURFACE_COEFFICIENT_MEASURED}（球语义掩码 median 池化下测得，"
                              "与本脚本口径一致）。理论参考：圆盘均值 0.667 / 圆盘中位 0.707 / "
                              "最近点 1.0。默认 0 = 关闭，与历史数字可比。")
-    parser.add_argument("--balltoken-fit-frames", "--balltoken_fit_frames",
-                        dest="balltoken_fit_frames", default=None,
-                        help="Context frames used to refit (pos15, v15) from the ball token's "
-                             "causal prefix positions, e.g. '0,3,6,9,12,15'. Default: all of them. "
+    parser.add_argument("--fit-frames", "--fit_frames",
+                        "--balltoken-fit-frames", "--balltoken_fit_frames",
+                        dest="fit_frames", default=None,
+                        help="Context frames whose rendered ball centres are refit into "
+                             "(pos15, v15), e.g. '0,3,6,9,12,15'. Default: all of them. "
                              "Dropping the earliest frames shortens the time span and makes the "
                              "fitted velocity worse (0.50 s -> 0.30 s costs 1.87x), so only drop "
-                             "them when ball_prefix_pos_error_frame* shows they are >1.6x worse.")
+                             "them when pixel_pos_error_frame* shows they are >1.6x worse.")
     parser.add_argument("--ball-radius", "--ball_radius", dest="ball_radius",
                         type=float, default=None,
                         help="球半径（米）。默认读 config 的 stream25_ball_radius（0.0325）")
@@ -1781,9 +1562,9 @@ if __name__ == "__main__":
         render_chunk=args.render_chunk, num_workers=args.num_workers,
         ball_radius_compensation=args.ball_radius_compensation,
         ball_radius=args.ball_radius,
-        balltoken_fit_frames=(
-            [int(x) for x in args.balltoken_fit_frames.split(",") if x.strip()]
-            if args.balltoken_fit_frames else None
+        fit_frames=(
+            [int(x) for x in args.fit_frames.split(",") if x.strip()]
+            if args.fit_frames else None
         ),
         context_offset=args.context_offset,
     )

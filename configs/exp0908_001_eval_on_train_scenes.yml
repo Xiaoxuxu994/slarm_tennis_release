@@ -159,8 +159,6 @@ stream25_reconstruction_loss: true
 # ---- 不开 ball token ----
 # 三种 ball token 配置在 6.5cm 上都输给像素法。换 domain 的第一次全量训练不该
 # 同时引入未证实的模块，否则涨跌归因不了。先把这批数据的基线立住。
-use_ball_token: false
-use_ball_token_intrunk: false
 
 # ---- 损失权重：与 exp0901_001 / exp0903_001 逐键相同 ----
 # 一个都不改是有意的：这次唯一要回答的问题是"换了外观 domain，同一套配方能到哪"。

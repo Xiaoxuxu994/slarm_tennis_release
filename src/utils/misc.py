@@ -558,10 +558,6 @@ def load_model(args, model_without_ddp, optimizer=None, loss_scaler=None):
             checkpoint = torch.load(args.resume_from, map_location="cpu", weights_only=False)
             if getattr(args, "stream25_reconstruction_loss", False):
                 validate_stream25_checkpoint_contract(checkpoint, args, role="resume")
-
-            from src.utils.ball_residual_checkpoint import validate_residual_checkpoint
-            validate_residual_checkpoint(checkpoint["model"], model_without_ddp.state_dict(), args,
-                                         checkpoint.get("args"))
             msg = model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
             logger.info(f"[Model-resume] Loaded model: {msg}")
             checkpoint_loaded = True
@@ -615,10 +611,6 @@ def load_model(args, model_without_ddp, optimizer=None, loss_scaler=None):
                 setattr(args, "camera_initialization_report", expansion)
         if camera_report.get("message"):
             logger.info("[Model-init] %s", camera_report["message"])
-
-        from src.utils.ball_residual_checkpoint import validate_residual_checkpoint
-        validate_residual_checkpoint(checkpoint_state, model_without_ddp.state_dict(), args,
-                                     checkpoint.get("args"))
         msg = model_without_ddp.load_state_dict(checkpoint_state, strict=False)
         allowed_missing_prefixes = ("task_semantic_pred.",)
         forbidden_missing = [
@@ -626,17 +618,31 @@ def load_model(args, model_without_ddp, optimizer=None, loss_scaler=None):
             for key in msg.missing_keys
             if not key.startswith(allowed_missing_prefixes)
         ]
+        # Missing and unexpected keys are not the same kind of event, and used to
+        # be treated the same way: both silently ignored. A missing key means a
+        # weight the model needs was NOT in the checkpoint, so it keeps its random
+        # initialisation and the run looks like a failed experiment rather than a
+        # failed load. That is an error. Unexpected keys are the reverse -- the
+        # checkpoint carries weights this model has no place for, which is what
+        # loading an older architecture normally looks like -- so those are logged.
         if forbidden_missing:
-            pass
+            raise RuntimeError(
+                f"{len(forbidden_missing)} weights are missing from the checkpoint and would "
+                f"stay randomly initialised: {forbidden_missing[:10]}"
+                + (" ..." if len(forbidden_missing) > 10 else "")
+                + ". Check that the config matches the checkpoint."
+            )
         if msg.unexpected_keys:
-            pass
+            logger.info(
+                "[Model-init] Discarded %d checkpoint weights this model has no place for: %s%s",
+                len(msg.unexpected_keys), msg.unexpected_keys[:10],
+                " ..." if len(msg.unexpected_keys) > 10 else "",
+            )
         checkpoint_loaded = True
         logger.info(f"[Model-init] Loaded model: {msg}")
         del checkpoint
 
     if not checkpoint_loaded:
-        if getattr(args, "ball_velocity_residual", False):
-            raise ValueError("Frozen residual experiment requires a pretrained baseline checkpoint")
         logger.info(f"Training from scratch. No checkpoint found.")
     return vis_slice_id
 

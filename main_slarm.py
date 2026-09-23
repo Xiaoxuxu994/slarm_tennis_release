@@ -262,50 +262,9 @@ def get_args_parser():
     parser.add_argument("--stream25_ms3_ball_weight", type=float, default=1.00)
     parser.add_argument("--stream25_ms3_static_weight", type=float, default=0.25)
     parser.add_argument("--stream25_opacity_weight", type=float, default=0.10)
-    # 内建 ball token
-    parser.add_argument("--use_ball_token", action="store_true")
-    parser.add_argument("--ball_token_freeze_backbone", action="store_true")
-    parser.add_argument("--stream25_ball_vel_scale", type=float, default=None,
-                        help="normalisation scale for the ball velocity loss, in m/s. "
-                             "Both physical prediction and GT are divided by this scale "
-                             "inside SmoothL1 only; it never scales decoder outputs. "
-                             "Unset/0 derives pos_scale/(t24-t15), not the frame45 horizon. "
-                             "Set 1.0 to reproduce runs from before 2026-08-31.")
-    parser.add_argument("--use_ball_token_intrunk", action="store_true",
-                        help="ball token as an aggregator special token (like sky/affine), "
-                             "so it goes through every attention layer and can shape the "
-                             "backbone. Do not enable together with --use_ball_token.")
-    parser.add_argument("--ball_pos_supervision", default="pooled",
-                        choices=("pooled", "per_view", "per_view_cross"),
-                        help="In-trunk position loss: original pooled, B per-view, or C per-view patch cross-attention")
-    parser.add_argument("--ball_prefix_supervision", action="store_true",
-                        help="Export causal per-prefix states for auxiliary physical supervision")
-    parser.add_argument("--ball_temporal_refine", action="store_true",
-                        help="Refine ball tokens from causal historical patches on the MAIN output path")
-    parser.add_argument("--ball_temporal_hidden_dim", type=int, default=256)
-    parser.add_argument("--ball_temporal_num_heads", type=int, default=4)
-    parser.add_argument("--ball_velocity_residual", action="store_true")
-    parser.add_argument("--ball_velocity_history", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--ball_velocity_hidden_dim", type=int, default=256)
-    parser.add_argument("--ball_velocity_only_train", action="store_true")
-    parser.add_argument("--ball_velocity_use_time", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--ball_velocity_use_difference", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--stream25_ball_delta_v_weight", type=float, default=0.0)
-    parser.add_argument("--stream25_ball_prefix_pos_weight", type=float, default=0.0)
-    parser.add_argument("--stream25_ball_prefix_vel_weight", type=float, default=0.0)
-    parser.add_argument("--stream25_ball_prefix_landing_weight", type=float, default=0.0)
     # 球半径（米）。只被评测侧的球心补偿用到（eval / verify 的
     # --ball-radius-compensation），训练损失不读它。6.5cm 球 -> 0.0325；24cm 那批要改。
     parser.add_argument("--stream25_ball_radius", type=float, default=0.0325)
-    parser.add_argument("--stream25_ball_pos_weight", type=float, default=1.0)
-    # 轨迹一致性：让 (pos15, v15) 这 6 个自由度去解释 batch 里全部 13 帧的位置标注
-    # （context 6 + target 7，标注已在显存里，此前被 `[:, -1]` 丢掉 12/13）。
-    # 结构上等价于对这 6 个自由度做最小二乘拟合。默认 0 = 关闭。
-    parser.add_argument("--stream25_ball_traj_weight", type=float, default=0.0)
-    # 落点：把残差放到 stream25_catch_frame 那一帧，杠杆臂最长。真值解析外推，
-    # 不需要标注里有那一帧。默认 0 = 关闭；没配 catch frame 时也不生效。
-    parser.add_argument("--stream25_landing_weight", type=float, default=0.0)
-    parser.add_argument("--stream25_ball_vel_weight", type=float, default=1.0)
     # MS3 physical normalization scales (spec 6.2) and the terminal dynamic split (spec 5.2).
     parser.add_argument("--stream25_ms3_velocity_scale", type=float, default=5.0)
     parser.add_argument("--stream25_ms3_acceleration_scale", type=float, default=9.81)
@@ -720,38 +679,6 @@ def main(args):
     logger.info(f"Dataset {args.dataset} contains {len(dataset_train):,} training sequences in total.")
 
     model = build_model(args)
-
-    if getattr(args, "ball_velocity_only_train", False):
-        if any(getattr(args, f"stream25_ball_prefix_{name}_weight", 0) != 0
-               for name in ("pos", "vel", "landing")):
-            raise ValueError("Frozen residual experiment does not permit prefix supervision")
-        if getattr(args, "ball_token_freeze_backbone", False):
-            raise ValueError("Do not combine velocity-only and legacy ball-token freezing")
-        trainable = [name for name, p in model.named_parameters() if p.requires_grad]
-        if not trainable or any(not name.startswith("ball_velocity_head.") for name in trainable):
-            raise RuntimeError("Velocity probe must train only ball_velocity_head parameters")
-        logger.info("[ball_velocity_only_train] Frozen baseline; trainable parameters: "
-                    + ", ".join(trainable))
-
-    # 两阶段训练可选：冻结 backbone，只训 ball token 相关参数。
-    # 必须在构建 optimizer 之前执行，否则冻结不生效。
-    if getattr(args, "ball_token_freeze_backbone", False):
-        # 外挂版 (ball_query/ball_block/ball_head) 与 in-trunk 版
-        # (aggregator.ball_token / ball_token_norm / ball_head_intrunk) 都要认。
-        # 注意：in-trunk 版配 freeze 在概念上是矛盾的 —— 把 token 放进 trunk 的
-        # 全部意义就是让梯度回到 backbone，冻住之后它退化成一个比外挂版还弱的
-        # probe（token 零初始化、只有读出头能学）。这里让它行为正确、不静默出错，
-        # 但不要这么用。
-        _ball_prefixes = ("ball_query", "ball_block", "ball_head",
-                          "ball_token_norm", "aggregator.ball_token", "ball_pos_cross", "ball_temporal")
-        for _name, _p in model.named_parameters():
-            if not _name.startswith(_ball_prefixes):
-                _p.requires_grad = False
-        _n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        logger.info(
-            f"[ball_token_freeze_backbone] Only ball token params trainable: "
-            f"{_n_trainable / 1e6:.4f}M ({_n_trainable:,})"
-        )
 
     logger.info(f"Model = {str(model)}")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

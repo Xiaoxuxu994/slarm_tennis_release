@@ -164,8 +164,6 @@ _MUST_ACCEPT_OFFSET = (
     "compute_stream25_scene_metrics",
     "evaluate_scene",
     "run_evaluation",
-    "compute_balltoken_frame24_metrics",
-    "_balltoken_fit_metrics",
     "compute_rendered_history_fit_metrics",
     "_finalize_and_write",
 )
@@ -313,9 +311,8 @@ def _validate_observation_fn():
 
 
 class _Model:
-    ball_temporal_refine = True
-    ball_prefix_supervision = False
-    ball_velocity_residual = False
+    """A plain pixel-path model: no flag makes the contract guard apply."""
+
     terminal_context_extrapolation = True
     num_cams = 3
 
@@ -405,93 +402,54 @@ def test_the_offset_resets_between_scenes():
 
 
 # ---------------------------------------------------------------------------
-# SLARM._validate_ball_temporal_observation
+# 这道校验必须对每个模型都生效
 #
-# 存在的理由：这是滑窗撞上的**第二道**写死契约的校验（第一道在 StreamSession）。
-#     ValueError: Temporal ball history must match frames 0,3,6,9,12,15
-# 它比 StreamSession 那道更难修，因为模型跨调用只靠 cache 传状态，所以 offset
-# 必须随 cache 一起走 —— 不然第二次观测就不知道本场景滑了多少。
+# 曾经不是。_validate_observation 里每一条检查都写成
 #
-# 这里钉住的正是那条链路：offset 由第一次观测确定、存进 cache、后续从 cache 读。
-# 如果 forward 忘了把 offset 放回新 cache（每次调用子模块都返回全新的 dict），
-# 第二步就会退回 offset 0 并报错 —— test_offset_must_survive_the_cache_handoff
-# 就是为这个失败模式写的。
+#     if strict_ball:
+#         raise ValueError(...)
+#     pass
+#
+# 而 strict_ball 只在模型带 ball token 时为真。像素路径 —— 唯一出货的那条路
+# —— 上，跳帧、乱序、窗口中途滑动全部被静默接受，然后给出一个看起来合理的
+# 错数字。上面那几条测试当年之所以能通过，只是因为 _Model 假装带了 ball token。
+#
+# ball token 支路已经删掉，校验也就没有理由再分模型。下面两条钉住这件事：
+# 契约对谁都一样，而且方法体里不能再有把检查吞掉的裸 `pass`。
 # ---------------------------------------------------------------------------
 
 
-def _ball_temporal_validator():
-    torch = pytest.importorskip("torch")
-    from src.utils.frame_indices import normalize_frame_indices
+def test_the_guard_does_not_depend_on_any_model_flag():
+    """A bare model -- no flags at all -- must still be held to the contract."""
+    validate, torch = _validate_observation_fn()
 
-    source = (ROOT / "src" / "models" / "slarm.py").read_text()
+    class _Bare:
+        num_cams = 3
+
+    session = _Session()
+    session.model = _Bare()
+    image = torch.zeros(1, 1, 3, 3, 4, 4)
+    with pytest.raises(ValueError):
+        validate(session, {
+            "context_image": image,
+            "context_frame_idx": torch.tensor([[3]] * 3),
+        })
+
+
+def test_no_check_in_the_validator_falls_through_to_pass():
+    """A bare `pass` where a raise belongs is how the guard was neutered."""
+    source = (ROOT / "src" / "models" / "stream_session.py").read_text()
     tree = ast.parse(source)
-    fn = next(
+    cls = next(
         node for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "_validate_ball_temporal_observation"
+        if isinstance(node, ast.ClassDef) and node.name == "StreamSession"
     )
-    # 方法体里那句 `from src.utils.frame_indices import ...` 会自己执行，
-    # 这里只需要 torch 和 Tensor 在命名空间里。
-    namespace = {"torch": torch, "Tensor": torch.Tensor,
-                 "normalize_frame_indices": normalize_frame_indices}
-    exec(compile(ast.Module([fn], []), "<validate_ball>", "exec"), namespace)
-    return namespace["_validate_ball_temporal_observation"], torch
-
-
-def _stream_ball(validate, torch, frames, *, drop_offset=False):
-    """Six single-observation calls, threading the cache exactly as forward does."""
-    session = object()
-    cache = None
-    for step, frame in enumerate(frames):
-        data = {
-            "context_image": torch.zeros(1, 1, 3, 3, 4, 4),
-            "context_frame_idx": torch.tensor([[[frame]] * 3]),
-        }
-        offset = validate(session, data, cache, True, aggregator_cache=None)
-        cache = {"num_steps": step + 1}
-        if not drop_offset:
-            cache["context_frame_offset"] = offset
-    return cache
-
-
-@pytest.mark.parametrize("offset", [0, 3, 6, 9])
-def test_ball_temporal_validator_accepts_a_slid_window(offset):
-    validate, torch = _ball_temporal_validator()
-    cache = _stream_ball(validate, torch, [f + offset for f in (0, 3, 6, 9, 12, 15)])
-    assert cache["context_frame_offset"] == offset
-
-
-def test_offset_must_survive_the_cache_handoff():
-    """The sub-modules return a fresh cache dict, so forward has to re-attach it."""
-    validate, torch = _ball_temporal_validator()
-    with pytest.raises(ValueError):
-        _stream_ball(validate, torch, [9, 12, 15, 18, 21, 24], drop_offset=True)
-
-
-def test_ball_temporal_validator_still_catches_a_truncated_history():
-    validate, torch = _ball_temporal_validator()
-    with pytest.raises(ValueError):
-        _stream_ball(validate, torch, [3, 6, 12, 15, 18, 21])
-
-
-def test_ball_temporal_validator_still_catches_a_reordered_history():
-    validate, torch = _ball_temporal_validator()
-    with pytest.raises(ValueError):
-        _stream_ball(validate, torch, [3, 6, 9, 15, 12, 18])
-
-
-def test_forward_reattaches_the_offset_to_the_outgoing_cache():
-    """Static guard: the sub-module's fresh dict must be stamped every call."""
-    source = (ROOT / "src" / "models" / "slarm.py").read_text()
-    assert 'context_frame_offset"] = ball_window_offset' in source
-    tree = ast.parse(source)
     fn = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "_validate_ball_temporal_observation"
+        node for node in cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_validate_observation"
     )
-    returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return) and n.value is not None]
-    assert returns, "the validator must hand the derived offset back to forward"
+    assert not [node for node in ast.walk(fn) if isinstance(node, ast.Pass)]
+    assert [node for node in ast.walk(fn) if isinstance(node, ast.Raise)]
 
 
 # ---------------------------------------------------------------------------

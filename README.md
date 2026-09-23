@@ -64,7 +64,7 @@ frame 0 → 3 → 6 → 9 → 12 → 15
 
 在 `terminal_context_extrapolation=True` 时，前五次调用只累计上下文和 Gaussian；第六次调用后才统一渲染全部 targets。
 
-> 注：训练与 `render_stream25_base.py` 走「整段一次前向 `model(input_dict)`」，`eval_stream25_base.py` 与 `inference_stream.py` 走「StreamSession 逐帧」。两条路径靠 window 因果 mask 设计上等价，可用 [`tools/check_render_vs_stream.py`](tools/check_render_vs_stream.py) 校验一致性。
+> 注：训练与 `render_stream25_base.py` 走「整段一次前向 `model(input_dict)`」，`eval_stream25_base.py` 与 `inference_stream.py` 走「StreamSession 逐帧」。两条路径靠 window 因果 mask 设计上等价。
 
 ### 3.2 Terminal-context 外推
 
@@ -103,22 +103,26 @@ main_slarm.py          训练主程序（入口 + 全部 argparse + 训练循环
 engine_tools.py        build_model / evaluate 等共享库（被多处 import，留在根）
 
 scripts/               面向使用的入口 py
-  ├─ train_stream25_base.py    stereo/triview 预设启动器（exec main_slarm.py）
+  ├─ train_stream25_base.py    记录 config/ckpt sha256 后 exec main_slarm.py
   ├─ eval_stream25_base.py     流式重建评估（acceptance 指标）
   ├─ render_stream25_base.py   生成指定帧长的重建视频（整段前向）
   └─ inference_stream.py       StreamSession 流式推理演示
 
 run_sh/                一键启动 sh（内部 cd 到仓根后调用上面的入口）
   ├─ train.sh                  训练：单卡 python / 多卡 torchrun 自动
-  ├─ eval.sh                   评估：输出目录按 config/ckpt 名自动生成
-  ├─ train_stream25_base.sh    预设启动器的 sh 包装
-  ├─ eval_stream25_base.sh     eval.sh 调用的底层评估 sh
-  └─ render_stream25_base.sh   渲染重建视频入口
+  ├─ eval.sh                   评估：扫 ckpt / offset，输出目录自动分开
+  ├─ render.sh                 渲染三视角未来帧预测
+  ├─ visualize.sh              数据集可视化
+  ├─ export_gs.sh              导出高斯点云序列
+  ├─ verify_sweep.sh           用 verify_physics_extrapolation 扫一串 ckpt 看趋势
+  └─ *_stream25_base.sh        上面几个壳调用的底层入口
 
-tools/                 辅助库与回归工具
-  ├─ compare_dump.py / compare_report.py   三套代码前向逐比特无损对比
-  ├─ check_render_vs_stream.py             整段前向 vs 流式逐帧 一致性检查
-  └─ stream25_runtime.py / export_ply.py / ...
+tools/                 数据准备、评测读数与可视化
+  ├─ make_scene_list.py / register_dataset.py / fix_scene_list.py   数据接入
+  ├─ check_dataset_contract.py / inspect_trajectory.py              标注体检
+  ├─ report_catch.py / catch_success_rate.py / compare_evaluations.py  结果读数
+  ├─ pick_scenes.py / export_ball_track.py / animate_ball_forecast.py  出图
+  └─ stream25_runtime.py / common.py / export_ply.py                共享库
 
 src/                   核心代码：models / dataset / utils / visualization
 configs/               实验 YAML
@@ -128,9 +132,9 @@ configs/               实验 YAML
 
 | 文件 | 用途 |
 |---|---|
-| `configs/slarm_stream25_24cm_nopitch_window6.yaml` | 双目 base |
 | `configs/slarm_stream25_24cm_triview_window6.yaml` | 三目 base |
-| `configs/slarm_stream25_24cm_triview_stereo_subset_window6.yaml` | 三目（stereo 子集）base |
+| `configs/exp0827_003_..._nolseg_anneal.yml` | backbone（cosine 退火终点） |
+| `configs/exp0915_001_..._pixel_finetune.yml` | 当前主线：0908_10k 像素路径微调 |
 | `run_sh/train.sh` | 训练启动（单/多卡自动） |
 | `run_sh/eval.sh` | 评估启动（输出路径自动） |
 | `src/models/slarm.py` | 主模型（Gaussian / MS3 / terminal 外推） |

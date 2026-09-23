@@ -1,4 +1,11 @@
-"""Full-only launcher for stereo and tri-view Stream25 training."""
+"""Tri-view Stream25 launcher that records what it actually launched.
+
+run_sh/train.sh is the everyday entry point; this one exists for the single
+thing it does that train.sh does not -- print the sha256 of the config and of
+the initial checkpoint before exec. A run whose log carries those two hashes
+can be traced back to exactly what produced it, which matters once several
+checkpoints share a name.
+"""
 
 from __future__ import annotations
 
@@ -12,22 +19,7 @@ import yaml
 
 
 WORKTREE = Path(__file__).resolve().parent.parent
-CONFIGS = {
-    "stereo": WORKTREE / "configs/slarm_stream25_24cm_nopitch_window6.yaml",
-    "triview": WORKTREE / "configs/slarm_stream25_24cm_triview_window6.yaml",
-}
-MODE_EXPECTATIONS = {
-    "stereo": {
-        "dataset": ["ball_catch_24cm_stereo40_stream25_nopitch"],
-        "num_max_cameras": 2,
-        "num_iterations": 20_000,
-    },
-    "triview": {
-        "dataset": ["ball_catch_24cm_triview"],
-        "num_max_cameras": 3,
-        "num_iterations": 40_000,
-    },
-}
+DEFAULT_CONFIG = WORKTREE / "configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml"
 
 
 def _sha256(path: str | Path) -> str:
@@ -38,16 +30,8 @@ def _sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def resolve_config(mode: str) -> str:
-    return str(CONFIGS[mode])
-
-
 def _load_config(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def validate_full_config(path: str | Path, mode: str) -> dict[str, Any]:
-    return _load_config(Path(path))
 
 
 def _consume_config(arguments: Sequence[str]) -> tuple[Path | None, list[str]]:
@@ -64,10 +48,11 @@ def _consume_config(arguments: Sequence[str]) -> tuple[Path | None, list[str]]:
     return requested, forwarded
 
 
-def build_launch_command(mode: str, extra_args: Sequence[str]) -> list[str]:
+def build_launch_command(extra_args: Sequence[str]) -> list[str]:
     requested, forwarded = _consume_config(extra_args)
-    config_path = (requested or Path(resolve_config(mode))).resolve()
-    validate_full_config(config_path, mode)
+    config_path = (requested or DEFAULT_CONFIG).resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"No such config: {config_path}")
     return [
         sys.executable,
         str(WORKTREE / "main_slarm.py"),
@@ -76,14 +61,14 @@ def build_launch_command(mode: str, extra_args: Sequence[str]) -> list[str]:
     ]
 
 
-def main(mode: str, extra_args: Sequence[str]) -> list[str] | None:
-    command = build_launch_command(mode, extra_args)
+def main(extra_args: Sequence[str]) -> list[str] | None:
+    command = build_launch_command(extra_args)
     config_path = Path(command[2].split("=", 1)[1])
     config = _load_config(config_path)
     checkpoint = Path(str(config["load_from"]))
     if not checkpoint.is_absolute():
         checkpoint = WORKTREE / checkpoint
-    print(f"[Stream25] mode={mode} config={config_path}")
+    print(f"[Stream25] config={config_path}")
     print(f"[Stream25] config_sha256={_sha256(config_path)}")
     if checkpoint.is_file():
         print(f"[Stream25] initial_checkpoint_sha256={_sha256(checkpoint)}")
@@ -97,9 +82,4 @@ def main(mode: str, extra_args: Sequence[str]) -> list[str] | None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("stereo", "triview"))
-    parsed, unknown = parser.parse_known_args()
-    main(parsed.mode, unknown)
+    main(sys.argv[1:])

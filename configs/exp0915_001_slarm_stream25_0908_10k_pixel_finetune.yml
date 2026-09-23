@@ -31,23 +31,6 @@ terminal_context_extrapolation: true
 stream25_render_target_chunk_size: 7
 stream25_reconstruction_loss: true
 
-use_ball_token: false
-use_ball_token_intrunk: false
-ball_token_freeze_backbone: false
-ball_velocity_residual: false
-ball_velocity_only_train: false
-ball_temporal_refine: false
-ball_prefix_supervision: false
-ball_pos_supervision: pooled
-stream25_ball_pos_weight: 0
-stream25_ball_vel_weight: 0
-stream25_ball_traj_weight: 0
-stream25_landing_weight: 0
-stream25_ball_delta_v_weight: 0
-stream25_ball_prefix_pos_weight: 0
-stream25_ball_prefix_vel_weight: 0
-stream25_ball_prefix_landing_weight: 0
-
 # Preserve the original pixel-path supervision and MS3 physical scales.
 stream25_rgb_weight: 1
 stream25_lpips_weight: 0.05

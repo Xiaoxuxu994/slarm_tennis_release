@@ -80,7 +80,6 @@ stream25_reconstruction_loss: true
 
 # ---- 不开 ball token：这组只回答"退火能不能让 stage1 稳下来" ----
 # 掺进新模块会让"变好了"分不清是退火的功劳还是 ball token 的功劳。
-use_ball_token: false
 
 # ---- 损失权重：与 exp0825_002 逐项一致（这组只改 LR 调度，别的都不能动）----
 stream25_rgb_weight: 1.00

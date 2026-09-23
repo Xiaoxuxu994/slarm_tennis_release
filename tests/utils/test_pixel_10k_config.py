@@ -15,13 +15,17 @@ class Pixel10kConfigTest(unittest.TestCase):
         self.config = yaml.safe_load((ROOT / "configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml").read_text())
 
     def test_pixel_only_and_initialization(self):
+        # The ball-token branch was removed from the code, so a config that still
+        # names it would be read by nothing. argparse rejects unknown keys loudly,
+        # but a YAML key that no `add_argument` claims is simply never read -- so
+        # this asserts absence, not falseness.
         for key in ("use_ball_token", "use_ball_token_intrunk", "ball_token_freeze_backbone",
                     "ball_velocity_residual", "ball_velocity_only_train", "ball_temporal_refine",
-                    "ball_prefix_supervision"):
-            self.assertIs(self.config[key], False, key)
+                    "ball_prefix_supervision", "ball_pos_supervision"):
+            self.assertNotIn(key, self.config, key)
         for key in ("ball_pos", "ball_vel", "ball_traj", "landing", "ball_delta_v",
                     "ball_prefix_pos", "ball_prefix_vel", "ball_prefix_landing"):
-            self.assertEqual(self.config[f"stream25_{key}_weight"], 0)
+            self.assertNotIn(f"stream25_{key}_weight", self.config, key)
         self.assertIn("exp0908_001_", self.config["load_from"])
         self.assertTrue(self.config["load_from"].endswith("ckpt_019999.pth"))
 
