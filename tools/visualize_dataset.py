@@ -7,33 +7,33 @@ Complete visualization script for the tri-view tennis-ball dataset.
 Expected dataset layout:
 
 SLARM_data/datasets/ball_catch_24cm_triview/training/scene_0000/
-├── ball_gt/
-│   └── trajectory.json
-├── front_left/
-│   ├── camera.yaml
-│   ├── trj_front_left.txt
-│   └── vis/
-│       ├── color/*.jpg
-│       ├── depth/*.tif
-│       └── semantic/*.png
-├── front_right/
-│   ├── camera.yaml
-│   ├── trj_front_right.txt
-│   └── vis/
-│       ├── color/*.jpg
-│       ├── depth/*.tif
-│       └── semantic/*.png
-└── lower_front/
-    ├── camera.yaml
-    ├── trj_lower_front.txt
-    └── vis/
-        ├── color/*.jpg
-        ├── depth/*.tif
-        └── semantic/*.png
+|--- ball_gt/
+|   `--- trajectory.json
+|--- front_left/
+|   |--- camera.yaml
+|   |--- trj_front_left.txt
+|   `--- vis/
+|       |--- color/*.jpg
+|       |--- depth/*.tif
+|       `--- semantic/*.png
+|--- front_right/
+|   |--- camera.yaml
+|   |--- trj_front_right.txt
+|   `--- vis/
+|       |--- color/*.jpg
+|       |--- depth/*.tif
+|       `--- semantic/*.png
+`--- lower_front/
+    |--- camera.yaml
+    |--- trj_lower_front.txt
+    `--- vis/
+        |--- color/*.jpg
+        |--- depth/*.tif
+        `--- semantic/*.png
 
 What this script outputs:
 1) temporal_rgb_grid.jpg
-   - 3 views × selected frames RGB mosaic
+   - 3 views x selected frames RGB mosaic
 
 2) modalities_frame_XXXX.jpg
    - Color / Depth / Semantic for each camera at one frame
@@ -42,7 +42,7 @@ What this script outputs:
    - 3-view fused RGB-D point cloud for one frame
 
 4) merged_rgbd_frames_XXXXX_XXXXX.ply
-   - 3-view × multi-frame fused RGB point cloud
+   - 3-view x multi-frame fused RGB point cloud
 
 5) merged_rgbd_frames_XXXXX_XXXXX_timecolor.ply
    - same multi-frame fused point cloud, but colored by time
@@ -89,7 +89,7 @@ If your data turns out to use world->camera transforms, change:
 
 NOTE: this script reads the *raw* capture layout (camera.yaml + trj_*.txt).
 Training reads the *annotation JSON* instead (camera_to_world /
-normalized_intrinsics / ball_trajectory). Those are two independent sources —
+normalized_intrinsics / ball_trajectory). Those are two independent sources --
 a good-looking point cloud does not prove the JSON was generated correctly.
 Run tools/check_dataset_contract.py for the JSON side.
 """
@@ -659,7 +659,7 @@ def print_ball_ratio_table(records, cams, ball_label):
             ctx = [f for f in empty_frames if f in (0, 3, 6, 9, 12, 15)]
             if ctx:
                 print(
-                    f"     [!] {ctx} are Stream25 CONTEXT frames — every "
+                    f"     [!] {ctx} are Stream25 CONTEXT frames - every "
                     "context observation must be visible in every view"
                 )
 
@@ -743,7 +743,7 @@ def save_ball_ratio_curve(records, cams, ball_label, out_path):
         ax.text(
             15.7,
             ax.get_ylim()[1] * 0.95,
-            "extrapolation →",
+            "extrapolation ->",
             fontsize=8,
             color="0.4",
             va="top",
@@ -1082,7 +1082,7 @@ def export_multiframe_ply(
 ):
     """
     Fuse:
-        all cameras × all selected frames
+        all cameras x all selected frames
 
     Static surfaces should overlap in world coordinates.
     Moving objects (the ball) should appear at different positions.

@@ -302,13 +302,13 @@ def fit_ballistic_state(
     so a plain two-parameter fit recovers the state. Two properties matter here,
     and both are tested:
 
-    ★ A **constant** position bias cancels out of the velocity exactly. It shifts
+     A **constant** position bias cancels out of the velocity exactly. It shifts
       q(t) by the same amount at every t, so it lands entirely in p0 and leaves
       v0 untouched. Learned position heads carry systematic biases -- this repo
       already found one, the 2.1 cm between the ball's front surface and its
       centre -- and this fit is immune to that whole class.
 
-    ★ The velocity error scales as ``sigma_p / (dt * sqrt(n(n^2-1)/12))``, which
+     The velocity error scales as ``sigma_p / (dt * sqrt(n(n^2-1)/12))``, which
       is dominated by the **time span**, not the sample count. Dropping the two
       earliest observations from the frozen six takes the span from 0.50 s to
       0.30 s and makes the fitted velocity 1.87x worse -- enough to lose to

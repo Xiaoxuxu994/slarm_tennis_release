@@ -1,21 +1,20 @@
-"""滑动观测窗口（context offset）。
+"""The sliding observation window (context offset).
 
-存在的理由：这是一个**纯数据侧**开关。`datasets.py` 的 `get_frame` 算的是
+This is a data-side switch only. get_frame computes dt against
+context_frames[0], so when the whole window moves later the source moves with it
+and the model receives byte-identical times; only the images change, with the ball
+nearer. No retraining is involved.
 
-    dt = time_in_seconds[frame_idx] - time_in_seconds[source_frame_idx]
+Three things here would quietly ruin an experiment:
 
-而 `source_frame_idx = context_frames[0]`，所以模型收到的时间是相对**窗口自己的
-第一帧**的。窗口整体后移、source 跟着移，模型看到的时间值逐字节不变（0, 0.1,
-..., 0.5 秒），连续的 time_embedder 分辨不出两个窗口。变的只有图像里球更近。
-
-这份测试盯住三件会悄悄毁掉实验的事：
-
-1. offset 0 必须**逐字节**等于冻结契约。任何漂移都会让所有历史数字失效。
-2. 不变量 `targets[15] == context[-1]`。eval 里每一处终端读出都写死了目标下标
-   15（`pred_depth[15]`、`target_ray_origins[0, 15]`），这条不成立就读错帧，
-   而且不会报错，只会给出一个看起来合理的错数。
-3. 训练路径必须拒绝非零 offset。训练的 target scheduler 仍然说冻结帧号，
-   滑窗后会把移位的 context 和没移位的 target 配在一起。
+1. Offset 0 must equal the frozen contract byte for byte, or every past number
+   stops meaning anything.
+2. The invariant targets[15] == context[-1]. Every terminal readout in the
+   evaluator hardcodes target index 15, so breaking it reads the wrong frame and
+   returns a plausible wrong number instead of an error.
+3. The training path must refuse a non-zero offset: its target scheduler still
+   speaks frozen frame numbers, and would pair a shifted context with unshifted
+   targets.
 
     pytest tests/dataset/test_context_offset.py -q
 """
@@ -32,8 +31,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# stream25.py 顶上 import cv2/torch，没装依赖的机器跑不了 import 那几条；
-# 纯算术的部分从 AST 里取出来单独执行，任何机器都能跑。
+# stream25.py imports cv2 and torch at the top, so the arithmetic is pulled out of
+# the AST and executed on its own; that runs anywhere.
 _BASE_CONTEXT = (0, 3, 6, 9, 12, 15)
 _BASE_TARGETS = tuple(range(25))
 
@@ -65,7 +64,7 @@ def test_zero_offset_is_the_frozen_contract_byte_for_byte():
 
 @pytest.mark.parametrize("offset", [0, 1, 3, 6, 9])
 def test_target_index_fifteen_is_always_the_terminal_observation(offset):
-    """eval 的终端读出写死了目标下标 15。这条不成立就静默读错帧。"""
+    """The evaluator hardcodes target index 15; breaking this reads a wrong frame."""
     context, targets = shifted_contract(offset)
     assert targets[15] == context[-1] == 15 + offset
 
@@ -150,12 +149,11 @@ def test_getitem_anchors_source_frame_to_the_window_not_the_clip():
 
 
 # ---------------------------------------------------------------------------
-# eval 侧的接线。纯静态，不 import（eval 会一路拉到 gsplat）。
+# Evaluator wiring, checked statically because importing it pulls in gsplat.
 #
-# 存在的理由和 test_eval_report_wiring.py 一样：commit a325081 在一个顶层函数体
-# 里引用了没有对应参数的名字，于是每一次 eval 都 NameError。offset 要穿过五层
-# 调用，任何一层漏掉参数，指标都会**静默**地按 offset 0 去索引 GT —— 不报错，
-# 只是拿终端状态去和错误的时刻比，得到一个看起来正常的数。
+# The offset crosses five calls. A layer that drops the parameter indexes the GT
+# at offset 0 silently, comparing the terminal state against the wrong instant and
+# returning a number that looks fine.
 # ---------------------------------------------------------------------------
 
 _EVAL_SRC = ROOT / "scripts" / "eval_stream25_base.py"
@@ -204,7 +202,7 @@ def test_gt_lookups_do_not_add_the_offset():
     offset, so the correct index is the constant 15; adding the offset is the
     bug, not the fix.
 
-    ★ This check walks the AST rather than scanning lines. A line-based regex
+     This check walks the AST rather than scanning lines. A line-based regex
       was written first and missed two of the four real spellings: one where
       the tensor name sat on the previous line of a wrapped call, and one where
       the offset was folded into a variable that was then used as the index.
@@ -215,8 +213,8 @@ def test_gt_lookups_do_not_add_the_offset():
     gt_names = ("ball_position_rig", "ball_velocity_rig", "gt_pos15", "gt_v15",
                 "gt_v", "gt_positions", "truth")
 
-    # 污点按**函数作用域**算，不是整模块：两个函数里都有叫 terminal 的局部变量，
-    # 一个是目标序下标、一个是绝对帧号，模块级的污点分析会把前者一起误报。
+    # Taint per function scope, not per module: two functions both have a local
+    # called terminal, one a target index and one an absolute frame.
     functions = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
     offenders = []
     for function in functions:
@@ -237,8 +235,8 @@ def _scan(function, gt_names, tainted, offenders):
         base = ast.unparse(node.value)
         if not any(name in base for name in gt_names):
             continue
-        # 取下标里真正出现的标识符，别用字符串切分 —— "(0, terminal)" 被
-        # split() 切出来是 ["(0,", "terminal)"]，带括号就永远匹配不上。
+        # Take the identifiers that actually appear; splitting the text leaves
+        # "terminal)" with a bracket attached and never matches.
         used = {n.id for n in ast.walk(node.slice) if isinstance(n, ast.Name)}
         index = ast.unparse(node.slice)
         if "context_offset" in index or used & tainted:
@@ -279,17 +277,17 @@ def test_catch_metric_is_registered_everywhere_it_is_aggregated():
 
 
 # ---------------------------------------------------------------------------
-# StreamSession 的观测校验器
+# StreamSession's observation validator.
 #
-# 存在的理由：offset 9 的第一次 eval 在这里炸了 ——
+# The first offset-9 eval failed here:
 #     ValueError: Expected context frame 0, got [3]
-# 校验器把 (0,3,6,9,12,15) 写死在 __init__ 里，dataset 那边滑了窗它不认。
+# the validator had (0,3,6,9,12,15) hardcoded in __init__ and did not recognise a
+# slid window. The fix is not to loosen it: sliding the whole window is allowed,
+# changing its SHAPE is not, so the first observation fixes the scene's offset and
+# every later step is still checked against the contract's stride. The tests below
+# hold that a skipped frame, a reordering and a repeat are all still caught.
 #
-# 修法不是把校验关掉。窗口整体后移是允许的，窗口的**形状**不允许变，所以第一次
-# 观测确定本场景的 offset，之后每一步仍按契约的步长核对。下面四条把"原来能抓到
-# 的现在还能抓到"钉住：跳帧、乱序、重复帧，一条都不能漏。
-#
-# 方法体从 AST 里取出来单独跑，不用 import（stream_session 会一路拉到 gsplat）。
+# The method body is executed from the AST; importing stream_session needs gsplat.
 # ---------------------------------------------------------------------------
 
 
@@ -402,20 +400,21 @@ def test_the_offset_resets_between_scenes():
 
 
 # ---------------------------------------------------------------------------
-# 这道校验必须对每个模型都生效
+# This guard must apply to every model.
 #
-# 曾经不是。_validate_observation 里每一条检查都写成
+# It did not. Every check in _validate_observation was written as
 #
 #     if strict_ball:
 #         raise ValueError(...)
 #     pass
 #
-# 而 strict_ball 只在模型带 ball token 时为真。像素路径 —— 唯一出货的那条路
-# —— 上，跳帧、乱序、窗口中途滑动全部被静默接受，然后给出一个看起来合理的
-# 错数字。上面那几条测试当年之所以能通过，只是因为 _Model 假装带了 ball token。
+# and strict_ball was only true for a model with a ball token. On the pixel path,
+# the only one that ships, a skipped frame, a reordering and a mid-scene slide were
+# all accepted silently. The tests above passed only because _Model pretended to
+# carry a ball token.
 #
-# ball token 支路已经删掉，校验也就没有理由再分模型。下面两条钉住这件事：
-# 契约对谁都一样，而且方法体里不能再有把检查吞掉的裸 `pass`。
+# The ball-token branch is gone, so the guard has no reason to vary by model. The
+# two tests below hold that, and that no bare `pass` swallows a check again.
 # ---------------------------------------------------------------------------
 
 
@@ -453,13 +452,13 @@ def test_no_check_in_the_validator_falls_through_to_pass():
 
 
 # ---------------------------------------------------------------------------
-# 第四次同类 bug：假设"永远有 25 个 target"
+# The fourth bug of this kind: assuming there are always 25 targets.
 #
 #     IndexError: index 22 is out of bounds for dimension 0 with size 22
 #
-# 滑窗会从尾部吃掉 target（offset k 只剩 25-k 个），所以任何按 range(25) 遍历
-# 渲染结果的循环都会越界。前三次是写死的**帧号**，这次是写死的**数量** —— 同一
-# 个毛病的两种长相，所以下面两条都扫。
+# Sliding eats targets from the tail, leaving 25-k, so any loop over range(25)
+# runs off the end. The first three were hardcoded frame NUMBERS, this one a
+# hardcoded COUNT -- the same mistake wearing different clothes.
 # ---------------------------------------------------------------------------
 
 
@@ -514,19 +513,20 @@ def test_extrapolation_buckets_empty_out_as_the_window_slides(offset, empty):
 
 
 # ---------------------------------------------------------------------------
-# 零外推陷阱
+# The zero-extrapolation trap.
 #
-# landing_index 取的是**存下来的最后一帧**（绝对帧 24）。窗口越往后滑，它离终端
-# 观测越近，到 offset 9 就重合了：
+# landing_index is the last stored frame, absolute 24. The further the window
+# slides the closer it gets to the terminal observation, and at offset 9 they
+# coincide:
 #
-#   offset  targets  landing_idx  landing_frame  terminal  frame24 外推
+#   offset  targets  landing_idx  landing_frame  terminal  frame24 horizon
 #      +0     25        24            24           15        0.300 s
 #      +3     22        21            24           18        0.200 s
 #      +6     19        18            24           21        0.100 s
 #      +9     16        15            24           24        0.000 s
 #
-# 零外推下 frame24_position 退化成"终端帧的位置误差"，数值比真的落点误差**小**，
-# 扫表的人会读成滑窗效果拔群。这比缺一个指标危险，所以那种情况下干脆不发。
+# frame24_position then degrades into the error at the terminal frame, a smaller
+# number that reads like the sliding window helped. Emitting nothing is safer.
 # ---------------------------------------------------------------------------
 
 

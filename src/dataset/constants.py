@@ -20,25 +20,22 @@ DATASETS = {
     "ball_catch_24cm_stereo40_stream25_nopitch": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
     "ball_catch_24cm_triview": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
     "ball_catch_6.5cm_triview": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
-    # catch45：与 6.5cm 同一套坐标约定（相机 OpenCV → 数据集 waymo 轴序，canonical 已是 FLU）。
-    # rig 原点高度不同（catch45 离地 1.0m，24cm/6.5cm 是 1.5m）不在这里体现 ——
-    # rig_to_world 是逐场景从标注 JSON 读的，这两个矩阵只描述轴序约定。
+    # catch45: same axis convention as 6.5cm. Rig height differs but does not appear
+    # here -- rig_to_world is read per scene; these matrices only describe axis order.
     "ball_catch_6.5cm_triview_catch45": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
-    # v3_0829：同一套坐标约定。这批的相机外参逐帧变化而 rig_to_world 是单个矩阵，
-    # 但球加速度的二阶差分仍等于重力，说明 rig 系依然是惯性系（相机相对固定 rig 运动，
-    # 或 rig 匀速直线运动），物理外推照常成立，这两个矩阵不受影响。
+    # v3_0829: same convention. Extrinsics vary per frame while rig_to_world is a
+    # single matrix, but the ball's second difference still equals gravity, so the
+    # rig frame is inertial and ballistic extrapolation holds.
     "ball_catch_triview_v3_0829": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
-    # 同一批数据的原生分辨率版本（480 宽 x 640 高）。坐标约定不随分辨率变化。
+    # Native-resolution version of the same data; the convention does not change.
     "ball_catch_triview_v3_0829_native": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
-    # 0902_fixed：同一套坐标约定。rig_to_world 是单矩阵（z 平移 +1），本质是世界系
-    # 的平移，所以天然惯性 —— 相机逐帧变只是相机相对 rig 在动。已验证：球的位置
-    # 二阶差分 -9.809981，速度与位置满足中点法则到 1e-5 m/s，是精确解析弹道。
+    # 0902_fixed: same convention. rig_to_world is a pure translation, so the frame
+    # is inertial. Verified: second difference -9.809981, position and velocity
+    # satisfy the midpoint rule to 1e-5 m/s -- an exact analytic trajectory.
     "ball_catch_triview_0902_fixed": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
-    # 0903_2k：同一套坐标约定。已核对本批的解析弹道：速度一阶差分给出
-    # a_z = -9.809990 m/s^2，x 严格匀速，rig_to_world 仍是纯平移（z +1），
-    # 所以 rig 系是惯性系，物理外推照常成立。
-    # ★ 本批世界系 z=0 在 base_link 那一层，地面在 z ~ -0.10 m（0901 是 z=0）。
-    #   这只影响"离地高度"这种人读的量，不影响这两个矩阵。
+    # 0903_2k: same convention; a_z = -9.809990 m/s^2 and rig_to_world is again a
+    # pure translation. World z=0 sits at base_link here and the floor is near
+    # -0.10 m, which only affects heights a human reads, not these matrices.
     "ball_catch_triview_0903_2k": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
     # Assumes the 0903 rig convention; verify the new annotations before training.
     "ball_catch_triview_0908_10k": {"opencv2dataset": opencv2waymo, "canonical_to_flu": np.eye(4)},
@@ -211,10 +208,9 @@ DATASET_DICT = {
         "ref_camera": "front_left",
     },
 
-    # catch45 场景数据。结构与 6.5cm 相同，只换数据源（data_root: data/slarm_data_catch45）。
-    # ★ 这个 key 必须与标注 JSON 里的 "dataset" 字段逐字一致，否则 DATASETS/DATASET_DICT
-    #   都取不到条目 —— 前者在 canonical 变换处 KeyError，后者在取 camera_list 时 KeyError。
-    #   核对：python3 tools/check_dataset_contract.py --data-root data/slarm_data_catch45 --json-only
+    # catch45. This key must match the annotation JSON's "dataset" field exactly,
+    # or both tables miss and raise KeyError at the canonical transform and at
+    # camera_list. Check with tools/check_dataset_contract.py --json-only.
     "ball_catch_6.5cm_triview_catch45": {
         "size": [320, 240],
         "temporal": True,
@@ -229,10 +225,9 @@ DATASET_DICT = {
         "ref_camera": "front_left",
     },
 
-    # v3_0829（data_root: data/slarm_data）。结构与前几批相同。
-    # ★ 用之前先看 tools/check_dataset_contract.py --visibility-summary：
-    #   抽查 5 个场景里有 2 个出现"某个 context 帧三视图全盲"，其中一个是 frame 15
-    #   —— 那种场景的落点预测没有锚点，是 frame24 指标里的纯噪声。
+    # v3_0829. Run check_dataset_contract.py --visibility-summary first: two of five
+    # sampled scenes have a context frame blind in all three views, one of them
+    # frame 15, which leaves the landing prediction with no anchor at all.
     "ball_catch_triview_v3_0829": {
         "size": [320, 240],
         "temporal": True,
@@ -247,18 +242,17 @@ DATASET_DICT = {
         "ref_camera": "front_left",
     },
 
-    # v3_0829 的原生分辨率版本（data_root: data/slarm_data_native）。
+    # v3_0829 at native resolution.
     #
-    # ★ size 是 (H, W) 不是 (W, H)。datasets.py:437-438 用
+    # size is (H, W), not (W, H). datasets.py uses
     #       fx_px = fx_norm * target_size[1]   (W)
     #       fy_px = fy_norm * target_size[0]   (H)
-    #   而 transforms.Resize(target_size) 按 torchvision 约定收 (h, w)。
-    #   240x320 那版是 [320, 240] = 320 高 240 宽的竖屏，翻倍就是 [640, 480]。
-    #   写反的话内参的两个方向会互换，几何全错而且不会报错。
+    # and transforms.Resize takes (h, w). Swapping them exchanges the two intrinsic
+    # directions: the geometry is wrong everywhere and nothing raises.
     #
-    # ★ normalized_intrinsics 与分辨率无关，原样复用即可：
+    # normalized_intrinsics is resolution independent and is reused as is:
     #       fx_px = 1.0723 * 480 = 514.7
-    #       fy_px = 0.8042 * 640 = 514.7      两者仍相等（方形像素）
+    #       fy_px = 0.8042 * 640 = 514.7      still equal, so pixels stay square
     "ball_catch_triview_v3_0829_native": {
         "size": [640, 480],
         "temporal": True,
@@ -273,17 +267,17 @@ DATASET_DICT = {
         "ref_camera": "front_left",
     },
 
-    # 0902_fixed（data_root: data/slarm_data，与 v3_0829 共用一个 root）。
+    # 0902_fixed, sharing a data_root with v3_0829.
     #
-    # ★ lower_front 从中段起看不到球：不是视场问题（球整段都投影在画面中央，
-    #   frame 15 时距中心不到 9 px），是**接球网兜遮挡**。50 个场景里 39 个
-    #   在 frame 15 —— 也就是外推锚点 —— 只剩 front_left/front_right 这对
-    #   纯水平基线，垂直视差在最关键的一帧缺失。
-    #   这是真实机构的忠实再现，不是数据缺陷：真相机同样会被网挡住。
+    # lower_front loses the ball partway through. Not field of view -- the ball
+    # stays near the image centre throughout -- but the catch net occluding it. In
+    # 39 of 50 scenes frame 15, the extrapolation anchor, is left with only the
+    # horizontal front_left/front_right baseline, so vertical parallax is missing
+    # at the frame that matters most. This is the real rig, not a data defect.
     #
-    # ★ 接球在第 45 帧，不是标注里 first_contact_frame 写的 30。那个字段是用
-    #   frame 15 而非出手帧做对称回落算出来的，差值恰好 15 = 上下文窗口末帧。
-    #   评测用 config 的 stream25_catch_frame，别读这个字段。
+    # The catch is at frame 45, not the annotation's first_contact_frame of 30:
+    # that field was computed from frame 15 instead of the release frame, off by
+    # exactly 15. Evaluation reads the config's stream25_catch_frame.
     "ball_catch_triview_0902_fixed": {
         "size": [320, 240],
         "temporal": True,
@@ -298,24 +292,22 @@ DATASET_DICT = {
         "ref_camera": "front_left",
     },
 
-    # 0903_2k：0902_fixed 的全量版本（房间场景 GS 渲染，2k 量级）。
+    # 0903_2k: the full version of 0902_fixed.
     #
-    # ★ size 是 (H, W)。本批 original_image_size / provenance.image_size 都写成
-    #   [320, 240]，同样是 (H, W) —— 图是 240 宽 x 320 高的竖屏。验证方法是内参：
+    # size is (H, W); the annotation's own fields use the same order. Verify with
+    # the intrinsics:
     #       fx_px = 0.6765179 * W(240) = 162.3643
-    #       fy_px = 0.5073884 * H(320) = 162.3643      两者相等 = 方形像素
-    #   若把 size 写成 [240, 320]，两个方向会互换成 216.5 / 121.8，几何全错且不报错。
-    #   （provenance 里的 focal 162.36429850 正是这个值。243.5464 是降采样前的源焦距，
-    #     比值恰好 1.5，不要拿它去算。）
+    #       fy_px = 0.5073884 * H(320) = 162.3643      equal, so pixels are square
+    # Writing size the other way round swaps these to 216.5 / 121.8: wrong geometry,
+    # no error. The 243.5464 in provenance is the pre-downsample focal; do not use it.
     #
-    # ★ lower_front 从 frame 16 起看不到球 —— 和 0902_fixed 同一个原因：**接球网兜遮挡**，
-    #   不是视场问题（球整段都在画面中央附近）。这是真机构的忠实再现，不是数据缺陷。
-    #   后果是外推锚点 frame 15 之后只剩 front_left/front_right 这对纯水平基线。
+    # lower_front loses the ball from frame 16, occluded by the catch net as in
+    # 0902_fixed, leaving only the horizontal baseline past the anchor frame.
     #
-    # ★ 接球帧用 45，不是标注里的 first_contact_frame=30，也不是新增的
-    #   catch_plane_x_rig。后者解出来正好是 frame 29.0000，看着像独立佐证，
-    #   其实是同一个错误换个轴写了一遍：那一帧球在离地 3.77 m，而相机 rig 才 1.5 m 高。
-    #   frame 45.15 才是回到出手高度（离地 1.213 m）。评测读 config 的 stream25_catch_frame。
+    # The catch frame is 45. Neither first_contact_frame=30 nor catch_plane_x_rig
+    # is right: the latter solves to frame 29, which looks like independent
+    # confirmation but is the same error on another axis -- the ball is 3.77 m up
+    # there, while the rig is 1.5 m. Frame 45.15 returns to the release height.
     "ball_catch_triview_0903_2k": {
         "size": [320, 240],
         "temporal": True,

@@ -1,6 +1,6 @@
 """Stream25 pure evaluation metrics and gates (Task 9, TDD slice 1).
 
-Spec §8: six time buckets, per-eye PSNR/SSIM/P10, dilated-ball PSNR,
+Spec sec.8: six time buckets, per-eye PSNR/SSIM/P10, dilated-ball PSNR,
 depth AbsRel/RMSE/ball metric, per-class IoU/mIoU/Dice, MS3 vector errors,
 frame-24 integration, worst normalized gate ratio, <1% tie-break.
 """
@@ -341,7 +341,7 @@ class TestCheckpointSelection:
         }
         selected = select_checkpoint(ckpts)
         # 10k has the lowest (1.1000); 5k is 1.1001 (within 1% of 1.1000)
-        # Tie rule: <1% difference → select earlier checkpoint
+        # Tie rule: <1% difference -> select earlier checkpoint
         # 5k is earlier than 10k, and 1.1001/1.1000 - 1 = 0.009% < 1%
         assert selected == "5k"
 

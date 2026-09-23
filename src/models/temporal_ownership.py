@@ -1,4 +1,4 @@
-"""Pure temporal ownership and MS3 displacement helpers (spec §5.2, ADR 0007).
+"""Pure temporal ownership and MS3 displacement helpers (spec sec.5.2, ADR 0007).
 
 These functions are pure and tested independently of the renderer so the
 physics contract (velocity, gravity, jerk) and the ownership contract (which
@@ -19,7 +19,7 @@ def ms3_displacement(
     jerk: torch.Tensor,
     dt: torch.Tensor,
 ) -> torch.Tensor:
-    """Full MS3 displacement: v·dt + 1/2·a·dt² + 1/6·j·dt³."""
+    """Full MS3 displacement: v*dt + 1/2*a*dt^2 + 1/6*j*dt^3."""
     return velocity * dt + 0.5 * acceleration * dt**2 + (1.0 / 6.0) * jerk * dt**3
 
 
@@ -29,7 +29,7 @@ def ms3_velocity(
     jerk: torch.Tensor,
     dt: torch.Tensor,
 ) -> torch.Tensor:
-    """MS3 velocity at time dt: v + a·dt + 1/2·j·dt²."""
+    """MS3 velocity at time dt: v + a*dt + 1/2*j*dt^2."""
     return velocity + acceleration * dt + 0.5 * jerk * dt**2
 
 
@@ -38,7 +38,7 @@ def ms3_acceleration(
     jerk: torch.Tensor,
     dt: torch.Tensor,
 ) -> torch.Tensor:
-    """MS3 acceleration at time dt: a + j·dt."""
+    """MS3 acceleration at time dt: a + j*dt."""
     return acceleration + jerk * dt
 
 
@@ -48,5 +48,5 @@ def classify_terminal_dynamic(
     velocity: torch.Tensor,
     threshold: float = TERMINAL_DYNAMIC_VELOCITY_THRESHOLD,
 ) -> torch.Tensor:
-    """Classify Gaussians as dynamic iff ||v|| >= 1.0 m/s (spec §5.2 rule 5)."""
+    """Classify Gaussians as dynamic iff ||v|| >= 1.0 m/s (spec sec.5.2 rule 5)."""
     return velocity.norm(dim=-1) >= threshold

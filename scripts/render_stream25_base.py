@@ -83,7 +83,7 @@ def configure_reconstruction_timeline(input_dict, num_frames):
 #: keeps the pixel grid visible; smoothing here would invent detail that the
 #: 2.66 px never had.
 #:
-#: ★ The crop WIDTH sets how big the ball looks, not the magnification. The ball
+#:  The crop WIDTH sets how big the ball looks, not the magnification. The ball
 #:   occupies ball_px / crop_w of the panel whatever it is scaled to, so a
 #:   32 px window leaves it at 8% of the panel and still hard to read; 16 px
 #:   puts it at 17%. The ball moves about 4.3 px per frame at this range and the
@@ -127,7 +127,7 @@ def draw_ball_box(image, centre, colour=BALL_BOX_RGB, size=BALL_BOX_PX, label=No
     comparing the box on the GT row against the box on the predicted row shows
     whether the model put the ball in the right place at all.
 
-    ★ Use the return value. These panels arrive from permutes, colormap slices
+     Use the return value. These panels arrive from permutes, colormap slices
       and fancy indexing, and OpenCV refuses anything whose memory layout is not
       a plain contiguous buffer ("Layout of the output array img is incompatible
       with cv::Mat"). Making it contiguous can copy, and drawing into a copy

@@ -93,11 +93,11 @@ def render_single_markdown(metrics: Dict[str, Any]) -> str:
         vals, direction, paths = row["values"], row["direction"], row["paths"]
         val_str = " / ".join(_fmt(v) for v in vals)
         thr = _threshold(row["threshold_key"], paths[0][1])
-        thr_str = _fmt(thr) if thr is not None else "—"
-        ok = "—"
+        thr_str = _fmt(thr) if thr is not None else "-"
+        ok = "-"
         if thr is not None and not (isinstance(vals[0], float) and math.isnan(vals[0])):
             passed = (vals[0] >= thr) if direction == "up" else (vals[0] <= thr)
-            ok = "✅" if passed else "❌"
+            ok = "yes" if passed else "NO"
         out.append(f"| {row['label']} | {val_str} | {thr_str} | {ok} |")
     return "\n".join(out)
 

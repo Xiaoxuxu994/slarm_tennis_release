@@ -1,6 +1,6 @@
-"""Stream25 isolated reconstruction losses and optimizer groups (Task 7, spec §6.2).
+"""Stream25 isolated reconstruction losses and optimizer groups (Task 7, spec sec.6.2).
 
-Ten independent weighted terms summed directly — no ``existing_global_loss_total``.
+Ten independent weighted terms summed directly -- no ``existing_global_loss_total``.
 Each term logs raw value, weighted value, and valid sample count.
 """
 from __future__ import annotations
@@ -247,7 +247,7 @@ def compute_stream25_loss(
     ball_depth_tail_fraction: float = STREAM25_BALL_DEPTH_TAIL_FRACTION,
     ball_depth_tail_weight: float = STREAM25_BALL_DEPTH_TAIL_WEIGHT,
 ) -> Dict[str, torch.Tensor]:
-    """Compute the ten Stream25 loss terms (spec §6.2)."""
+    """Compute the ten Stream25 loss terms (spec sec.6.2)."""
     output = pred
     pred = output.get("render_results", output)
     input_dict = input_dict or {}
@@ -487,7 +487,7 @@ def stream25_cosine_lr(
     *,
     warmup: int = 500,
 ) -> float:
-    """Cosine LR with linear warmup (spec §6.3)."""
+    """Cosine LR with linear warmup (spec sec.6.3)."""
     if step < warmup:
         return base_lr * (step + 1) / warmup
     progress = (step - warmup) / max(1, total_steps - warmup)
@@ -518,7 +518,7 @@ def make_stream25_param_groups(
     trunk_lr: float,
     weight_decay: float,
 ) -> List[Dict[str, Any]]:
-    """Create trunk/head param groups for Stream25 (spec §6.3).
+    """Create trunk/head param groups for Stream25 (spec sec.6.3).
 
     Trunk (aggregator, patch embed, shared latent norm): trunk_lr.
     All heads (reconstruction, task semantic, MS3, sky, affine): head_lr.

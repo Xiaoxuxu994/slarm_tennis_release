@@ -712,7 +712,7 @@ def main(args):
     logger.info(f"{args.model} Trainable Parameters: {num_trainable_params / 1e6:.2f}M")
     logger.info(f"Training with {world_size} GPUs")
 
-    # LSeg feature extraction removed in woLSeg variant — no feature supervision.
+    # LSeg feature extraction removed in woLSeg variant -- no feature supervision.
     feat_extractor = None
 
     data_iter_step = args.start_iteration

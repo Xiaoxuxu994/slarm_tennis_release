@@ -169,13 +169,13 @@ if __name__ == "__main__":
 
     # === difference computation ===
     diff = (y_parallel - y_stream).abs().mean()
-    print(f"✅ Max difference (parallel vs streaming): {diff:.2e}")
+    print(f"[ok] max difference (parallel vs streaming): {diff:.2e}")
 
     if diff < 1e-3:
-        print("🎉 Multi-layer model: parallel and streaming inference are fully consistent!")
+        print("[ok] multi-layer model: parallel and streaming inference agree")
     else:
-        print("❌ Inconsistent! Please check the implementation.")
+        print("[FAIL] inconsistent; check the implementation")
 
     total_params = count_parameters(model)
-    print(f"✅ Total model parameters: {total_params:,}")
-    print(f"   ≈ {total_params / 1e6:.2f} M (million)")
+    print(f"[ok] total model parameters: {total_params:,}")
+    print(f"     about {total_params / 1e6:.2f} M")

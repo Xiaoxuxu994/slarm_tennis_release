@@ -1,4 +1,4 @@
-"""True-stream evaluator for Stream25 (Task 9, spec §8).
+"""True-stream evaluator for Stream25 (Task 9, spec sec.8).
 
 Instantiates a fresh StreamSession per scene, streams [0,3,6,9,12,15], renders
 all 25 native tri-view targets after observation 6, and applies frozen absolute
@@ -294,7 +294,7 @@ def compute_rendered_history_fit_metrics(
 ) -> Dict[str, float]:
     """Refit (pos15, v15) from the ball's rendered position at several frames.
 
-    ★ Why this is not circular. terminal_context_extrapolation makes frame 15 the
+     Why this is not circular. terminal_context_extrapolation makes frame 15 the
       sole owner of targets at or after frame 15 (slarm.py clears the earlier
       context frames there), but targets *before* frame 15 are still rendered by
       the nearby context frames' own Gaussians under time_mask_backward. So the
@@ -302,7 +302,7 @@ def compute_rendered_history_fit_metrics(
       integrated backwards, and fitting a velocity to them learns something the
       MS3 head did not already assert.
 
-    ★ Why it can beat the MS3 head. A position error component that is constant
+     Why it can beat the MS3 head. A position error component that is constant
       across the six frames cancels exactly out of the fitted velocity, so only
       the frame-to-frame scatter matters. pixel_pos_error_constant_m and
       pixel_pos_error_scatter_m split the measured error that way; the ratio
@@ -1122,7 +1122,7 @@ def _render_failing_gates(result: Dict[str, Any]) -> List[str]:
         status = rec.get("status", "FAIL")
         if status == "INSUFFICIENT_SAMPLES":
             lines.append(
-                f"- `{gate_id}` — **INSUFFICIENT_SAMPLES**"
+                f"- `{gate_id}` - **INSUFFICIENT_SAMPLES**"
                 f" ({rec.get('valid_count')} valid < {rec.get('minimum_valid_count')} required)"
                 " - this view cannot see the ball in this bucket; training will not fix it"
             )

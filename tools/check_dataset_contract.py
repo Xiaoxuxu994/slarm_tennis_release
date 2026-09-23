@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""接入新数据集前的契约自检。
+"""Contract check to run before training on a new dataset.
 
-为什么需要这个工具
-------------------
-Stream25 的 dataloader 里写了不少校验，但**失败分支全是 ``pass``**：
+The dataloader has plenty of validation, but its failure branches are all `pass`:
+the timespan check in datasets.py, _preflight_stream25_semantic_visibility, and
+build_frame_eye_visibility's contract check. Malformed data therefore raises
+nothing and quietly produces a wrong training signal -- a landing error that will
+not come down, with a clean log and nothing to chase.
 
-  - ``datasets.py`` timespan 校验 -> ``if ...: pass``
-  - ``datasets.py`` _preflight_stream25_semantic_visibility -> 每个分支都是 ``pass``
-  - ``stream25.py`` build_frame_eye_visibility 的契约检查 -> 同样是 ``pass``
+This runs those checks before training instead.
 
-也就是说：**数据格式不对不会抛异常，只会静默产生错误的训练信号**。典型后果是
-ball_pos15_error 莫名其妙地大、落点误差收不下去，而日志里一切正常，回头查要花很久。
+    python tools/check_dataset_contract.py --data-root <root> [--limit 20]
 
-这个脚本把那些"本该报错却被 pass 掉"的检查在训练之前跑一遍。
-
-用法
-----
-    python tools/check_dataset_contract.py --data-root data/slarm_data_catch45
-    python tools/check_dataset_contract.py --data-root ... --limit 20 --timespan 0.8
-
-只依赖标准库；有 cv2 时会额外校验语义图与可见性标注是否一致（强烈建议装）。
-
-注意：所有运行时输出都是纯 ASCII 英文。终端 locale 常常渲染不了中文和 emoji
-（会变成一串下划线，看起来像什么都没打印），所以注释用中文、输出一律英文。
+Standard library only; with cv2 installed it also checks the semantic maps against
+the visibility annotations, which is worth having. All output is ASCII English.
 """
 from __future__ import annotations
 
@@ -38,14 +28,14 @@ WORKTREE = Path(__file__).resolve().parent.parent
 if str(WORKTREE) not in sys.path:
     sys.path.insert(0, str(WORKTREE))
 
-# Stream25 的冻结时序契约（与 src/dataset/stream25.py 一致）
+# The frozen Stream25 timing contract, matching src/dataset/stream25.py
 CONTEXT_FRAMES = (0, 3, 6, 9, 12, 15)
 ALL_TARGET_FRAMES = tuple(range(25))
 TERMINAL_FRAME = 15
 GRAVITY_RIG = (0.0, 0.0, -9.81)
 
 FAIL, WARN, PASS = "FAIL", "WARN", "PASS"
-# 纯 ASCII：emoji 在多数终端 locale 下渲染不出来
+# ASCII only: emoji do not render in most terminal locales
 _ICON = {FAIL: "[FAIL]", WARN: "[WARN]", PASS: "[ OK ]"}
 
 
@@ -74,11 +64,11 @@ class Report:
             print(f"  {_ICON[level]} {msg}")
             shown += 1
         if shown == 0:
-            # 全通过且没开 --show-pass 时，别让屏幕看起来像脚本没跑
+            # All passed without --show-pass: say so rather than print nothing
             print("\nNo failures or warnings. Re-run with --show-pass to list every check.")
 
 
-# ---------------------------------------------------------------- 小工具
+# ---------------------------------------------------------------- helpers
 def _is_mat4(v) -> bool:
     return (isinstance(v, list) and len(v) == 4
             and all(isinstance(r, list) and len(r) == 4 for r in v))
@@ -98,11 +88,11 @@ def _mean_vec(vs):
     return [sum(v[i] for v in vs) / len(vs) for i in range(3)]
 
 
-# ---------------------------------------------------------------- 注册检查
+# ---------------------------------------------------------------- registration
 def check_registration(dataset_name: str, rep: Report) -> dict | None:
     scope = "constants.py registration"
 
-    # 4 处 dataset_name.startswith("ball_catch") 决定是否走接球任务分支
+    # Four startswith("ball_catch") branches decide whether the catch task runs
     if dataset_name.startswith("ball_catch"):
         rep.add(PASS, scope, f"dataset name {dataset_name!r} starts with 'ball_catch'")
     else:
@@ -116,8 +106,8 @@ def check_registration(dataset_name: str, rep: Report) -> dict | None:
             DATASETS, DATASET_DICT, SEMANTIC_ID_TO_IDX_DICT,
         )
     except Exception as exc:                                  # noqa: BLE001
-        # 只有注册检查需要 import constants（间接依赖 numpy 等）。JSON 契约检查
-        # 是纯标准库的，不该被它拖累 —— 降级为警告后继续。
+        # Only this check imports constants; the JSON checks are standard library
+        # and should not be blocked by it, so warn and carry on.
         rep.add(WARN, scope,
                 f"cannot import constants.py ({exc}); skipping registration checks. "
                 "JSON contract checks still run")
@@ -152,7 +142,7 @@ def check_registration(dataset_name: str, rep: Report) -> dict | None:
     return entry
 
 
-# ---------------------------------------------------------------- 场景检查
+# ---------------------------------------------------------------- scene checks
 REQUIRED_TOP = (
     "dataset", "num_timesteps", "normalized_time", "camera_to_world",
     "normalized_intrinsics", "relative_image_path", "task_semantic_path",
@@ -173,7 +163,7 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
         rep.add(FAIL, scope, f"num_timesteps={n}; Stream25 needs at least 25 frames")
         return
 
-    # ---- 时间契约（datasets.py 里这段校验是 pass，不生效）----
+    # ---- timing contract (the datasets.py version of this is a `pass`) ----
     t = js["normalized_time"]
     if not isinstance(t, list) or len(t) <= ALL_TARGET_FRAMES[-1]:
         rep.add(FAIL, scope,
@@ -190,7 +180,7 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
         else:
             rep.add(PASS, scope, f"timespan={span:.6f} matches the config")
 
-    # ---- 相机 ----
+    # ---- cameras ----
     declared_cams = js.get("camera_list")
     if isinstance(declared_cams, list):
         n_cam = len(declared_cams)
@@ -213,7 +203,7 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
     if ref_cam not in js["camera_to_world"]:
         rep.add(FAIL, scope, f"camera_to_world has no reference camera {ref_cam!r}")
 
-    # ---- 外参：逐帧 + 是否真的在动 ----
+    # ---- extrinsics: per frame, and do they actually move ----
     moving = False
     for cam in cams:
         c2w = js["camera_to_world"].get(cam)
@@ -236,7 +226,7 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
                 "camera positions change per frame (per-frame extrinsics are supported); "
                 "whether that is a problem is decided by the gravity check below")
 
-    # ---- 内参量纲：必须是归一化值 ----
+    # ---- intrinsics must be normalised ----
     for cam in cams:
         k = js["normalized_intrinsics"].get(cam)
         if not isinstance(k, list) or len(k) != 4:
@@ -250,9 +240,9 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
                     "units inflate the intrinsics by a few hundred times, silently")
         else:
             rep.add(PASS, scope, f"normalized_intrinsics[{cam}] is normalized")
-        break   # 各相机同构，抽一个即可
+        break   # cameras are alike; one sample is enough
 
-    # ---- 路径字段 ----
+    # ---- path fields ----
     for key in ("relative_image_path", "task_semantic_path"):
         table = js[key]
         for cam in cams:
@@ -265,25 +255,22 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
         else:
             rep.add(PASS, scope, f"{key} has {n} entries for every camera")
 
-    # ---- 生产方自己声明的风险 ----
+    # ---- risks the producer declared ----
     _check_provenance(js, scope, rep)
 
-    # ---- 图像文件真的在不在 ----
-    # 标注 JSON 的路径对，不代表图像路径对 —— 它们是两棵树：
-    #   标注: <root>/<scene_list 里写的相对路径>          datasets.py:192
-    #   图像: <root>/datasets/<dataset>/<relative_image_path>   datasets.py:283
-    # 而 datasets.py:284 是裸的 Image.open()，没有守卫。路径错了要等到训练
-    # 第一步才炸，那时模型已经建完、数据集已经加载完了。
+    # ---- do the image files exist ----
+    # Annotations and images are two different trees, and the image open has no
+    # guard, so a wrong image path only fails at the first training step -- after
+    # the model is built and the dataset loaded.
     _check_image_files(js, cams, n, data_root, scope, rep)
 
-    # ---- 球轨迹 ----
+    # ---- ball trajectory ----
     bt = js["ball_trajectory"]
     r2w = bt.get("rig_to_world")
-    # 相机在动 + rig_to_world 单矩阵，这个组合本身**不能**判定数据有问题：
-    # 它既可能是"rig 在加速运动、rig 系已非惯性系"（真坏），也可能是
-    # "rig 静止或匀速，相机相对 rig 在动（云台/机械臂），rig 系被定义为某个固定位姿"
-    # （完全合法）。区分这两者的唯一判据是球加速度的二阶差分是不是重力 ——
-    # 所以这条延到重力检查之后再发，措辞按重力的结果定。
+    # Moving cameras plus a single rig_to_world does not by itself mean bad data: a
+    # rig that is still or moving uniformly with cameras moving relative to it is
+    # perfectly legal. Only the ball's second difference tells the two apart, so
+    # this verdict waits for the gravity check below.
     rig_single = _is_mat4(r2w)
     if rig_single:
         rep.add(PASS, scope, "rig_to_world is a single 4x4")
@@ -308,11 +295,10 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
             return
     rep.add(PASS, scope, f"position_rig / velocity_rig present for all {n} frames")
 
-    # ---- 惯性系自洽：二阶差分应等于重力 ----
+    # ---- inertial frame: the second difference should equal gravity ----
     pos = [fr["position_rig"] for fr in frames]
-    # normalized_time 虽名为 normalized，单位其实是秒：dataloader 的 timespan 校验
-    # 直接拿 t[24]-t[0] 和 config 的 timespan(0.8) 比，而 data_utils 是 time/timespan
-    # 才得到归一化值。所以这里不能再乘一次 timespan。
+    # Despite the name, normalized_time is in seconds: the dataloader compares
+    # t[24]-t[0] against timespan directly. Do not multiply by timespan again.
     dt = float(t[1]) - float(t[0]) if len(t) > 1 else 0.0
     if dt > 0:
         acc = []
@@ -328,8 +314,8 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
                     f"mean ball acceleration in rig frame {shown} is close to gravity; "
                     "frame definition and timestamps are self-consistent")
             if moving and rig_single:
-                # 重力自洽 => rig 系是惯性系。相机逐帧变只是相机相对 rig 在动，
-                # 或者 rig 做匀速直线运动 —— 两种都不影响物理外推。
+                # Gravity checks out, so the rig frame is inertial and the moving
+                # cameras do not affect ballistic extrapolation.
                 rep.add(PASS, scope,
                         "cameras move per frame while rig_to_world is a single matrix, and "
                         "the gravity check passes -- so the rig frame is still inertial "
@@ -349,7 +335,7 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
                         "pos + v*dt + 0.5*g*dt^2 does not hold and pos15 and gt_pos24 are not "
                         "in the same frame. rig_to_world has to become per-frame")
 
-        # 速度字段与位置差分是否自洽
+        # Does the velocity field agree with differenced positions
         vel_err = []
         for i in range(n - 1):
             fd = [(pos[i + 1][d] - pos[i][d]) / dt for d in range(3)]
@@ -368,18 +354,19 @@ def check_scene(js: dict, entry: dict, data_root: Path, timespan: float,
                         f"(median gap {med:.3f} m/s). Any velocity supervision reads a "
                         "target that the positions do not support")
 
-    # ---- 可见性：先做不需要读图的部分（没装 cv2 也能查）----
+    # ---- visibility: the part that needs no images, so cv2 is optional ----
     declared = _declared_visibility(js, cams, n, scope, rep)
     if declared is not None:
         _check_context_visibility(declared, cams, scope, rep)
-        # 再复现 dataloader 里被 pass 掉的 preflight（这步要读语义图）
+        # Then reproduce the preflight the dataloader passes over; needs the maps
         if check_images:
             _check_visibility(js, cams, n, data_root, scope, rep, declared)
 
 
-# source_provenance 里这些字段说明标签不是真值，或者坐标约定变了。
-# 没有任何代码读 source_provenance，所以这些警告写在 JSON 里等于没写 ——
-# 转成 WARN 打出来，免得有人拿一个合成标签的 IoU 去追模型问题。
+# These source_provenance fields mean the labels are not ground truth, or that the
+# coordinate convention changed. No code reads source_provenance, so a warning
+# written there is invisible; surface it rather than let someone chase a model
+# problem that is really a synthetic label.
 _PROVENANCE_FLAGS = {
     "floor_repair": (
         "the floor label was synthesised (morphological repair), so it is a "
@@ -391,7 +378,7 @@ _PROVENANCE_FLAGS = {
         "the world frame convention changed. Nothing in the pipeline intersects "
         "the ground, so training and the frame24 metric are unaffected, but any "
         "absolute height compared against another batch is not comparable"),
-    "mask_moving_depth": None,      # 只回显，不判定
+    "mask_moving_depth": None,      # echoed, not judged
     "semantic_mode": None,
     "focal_spec": None,
 }
@@ -414,11 +401,11 @@ def _check_provenance(js: dict, scope: str, rep: Report) -> None:
 
 def _check_image_files(js: dict, cams, n: int, data_root: Path,
                       scope: str, rep: Report, probe_frames: int = 6) -> None:
-    """按 dataloader 的拼法解析图像路径，确认文件存在。
+    """Resolve image paths the way the dataloader does and check they exist.
 
-    只 stat 不读图，所以没有 cv2/PIL 也能跑，而且很快。默认抽查前 probe_frames
-    帧的每个相机；抽查够用是因为一个场景的图像通常一起产出，缺就整批缺，
-    而全量 stat 在大数据集上会拖慢这个本该秒回的检查。
+    Stats only, so no cv2 or PIL needed. Samples the first probe_frames frames:
+    a scene's images are produced together, so a gap is a whole-batch gap, and a
+    full stat would slow down a check that should answer in seconds.
     """
     dataset_name = js.get("dataset", "")
     if not dataset_name:
@@ -457,7 +444,7 @@ def _check_image_files(js: dict, cams, n: int, data_root: Path,
 
 def _declared_visibility(js: dict, cams, n: int, scope: str,
                          rep: Report) -> dict[str, list[bool]] | None:
-    """把两种声明格式统一成 {相机: [每帧 bool]}。纯数据操作，不读图。"""
+    """Normalise both declaration formats into {camera: [per-frame bool]}."""
     mask_by_cam = js.get("ball_visible_mask_by_camera")
     frames_by_cam = js.get("ball_visible_frames_by_camera")
     if mask_by_cam is None and frames_by_cam is None:
@@ -479,7 +466,7 @@ def _declared_visibility(js: dict, cams, n: int, scope: str,
                     f"visibility annotation for {cam} has length {len(out[cam])}, "
                     f"expected num_timesteps {n}")
             return None
-    # 两种格式都给了就必须自洽
+    # If both formats are present they must agree
     if mask_by_cam is not None and frames_by_cam is not None:
         for cam in cams:
             if cam in mask_by_cam and cam in frames_by_cam:
@@ -491,25 +478,26 @@ def _declared_visibility(js: dict, cams, n: int, scope: str,
 
 
 def _check_context_visibility(declared: dict, cams, scope: str, rep: Report) -> None:
-    """context 帧必须在所有视图可见（stream25.py 的契约，那里的检查是 pass）。
+    """Context frames must be visible in every view -- stream25.py's contract, where
+    the check is a `pass`.
 
-    这一项不需要读图，所以独立于语义图校验 —— 否则没装 cv2 就查不出来。
+    Needs no images, so it is separate from the semantic-map check.
     """
     bad = [(cam, f) for cam in cams for f in CONTEXT_FRAMES if not declared[cam][f]]
     blind = sorted({f for f in CONTEXT_FRAMES if all(not declared[c][f] for c in cams)})
     if blind:
-        # 所有视图都看不到球 -> 这一帧根本无法定位球，落点评测里这类场景是纯噪声
+        # No view sees the ball: the frame cannot locate it at all, and such a
+        # scene is pure noise in the landing metric
         rep.add(FAIL, scope,
                 f"context frames {blind} have NO camera that can see the ball. Nothing can "
                 "localize the ball at those frames; if frame 15 is among them the whole "
                 "landing prediction for this scene is unanchored")
     partial = [(cam, f) for cam, f in bad if f not in set(blind)]
     if partial:
-        # ★ WARN 不是 FAIL，尽管 stream25.py 的契约写的是"每个视图都要看得见"。
-        #   理由是下面这段说明自己给出的：不崩、轨迹真值不受影响，代价只在推理端。
-        #   而且对球拍/网兜遮挡这类数据（0902_fixed / 0903_2k），部分视图盲是**常态**
-        #   —— 报 FAIL 会让 2000 个场景刷出 2000 条同样的 FAIL、退出码 1，
-        #   把真正致命的 all-blind 那条淹掉。严重度要能区分"次优"和"不可用"。
+        # WARN rather than FAIL: nothing crashes and the trajectory truth is
+        # unaffected. On net-occluded data a partly blind view is the norm, so
+        # FAIL would print the same line 2000 times and bury the all-blind case
+        # that really is fatal. Severity has to separate "worse" from "unusable".
         n_view = len(cams)
         by_frame = {}
         for cam, f in partial:
@@ -568,7 +556,7 @@ def _check_visibility(js: dict, cams, n: int, data_root: Path,
         rep.add(PASS, scope, "visibility annotations agree with the semantic maps frame by frame")
 
 
-# ---------------------------------------------------------------- 可见性总览
+# ---------------------------------------------------------------- visibility summary
 CAMERA_CONTRACT = {
     2: ["front_left", "front_right"],
     3: ["front_left", "front_right", "lower_front"],
@@ -577,20 +565,19 @@ CAMERA_CONTRACT = {
 
 def visibility_summary(scene_files, root: Path, num_cams: int | None = None,
                        drop_list_path: Path | None = None) -> int:
-    """扫全部场景，统计 context 帧的球可见性分布。
+    """Scan every scene for the distribution of ball visibility in context frames.
 
-    抽查几个场景只能告诉你"有这个问题"，告诉不了你"这个问题有多大"。
-    决定一份数据能不能用，看的是分布：偶发的几帧缺失可以接受，
-    过半场景 frame15 只剩一个视图看得到球，那落点精度就有个数据层面的天花板。
+    Sampling a few scenes tells you the problem exists, not how big it is, and the
+    distribution is what decides whether data is usable: occasional gaps are fine,
+    but if most scenes see the ball from one view at frame 15 then landing accuracy
+    has a ceiling set by the data.
 
-    num_cams 限定只看训练实际用到的那几路（camera_list[num_cams]）。
-    双视图训练时这一步是必须的：三视图下靠 lower_front 才看得到球的帧，
-    在双视图下是全盲，而 all-blind 的场景在 frame24 指标里是纯噪声。
-    不给就用场景自己声明的全部相机。
+    num_cams restricts this to the views training actually uses. That matters for
+    two-view runs: a frame only lower_front could see is blind there.
 
-    drop_list_path 会把"某个 context 帧全盲"的场景名写出来，用于生成
-    两组实验共用的 scene_list —— 视图数不同各自剔除的场景也不同，
-    不取交集就变成在比数据集难度而不是比视图数。
+    drop_list_path writes out the scenes with an all-blind context frame, so two
+    experiments can share one scene_list -- different view counts otherwise drop
+    different scenes and the comparison becomes one of dataset difficulty.
     """
     per_cell: dict[tuple[int, str], int] = {}
     all_blind: dict[int, int] = {f: 0 for f in CONTEXT_FRAMES}
@@ -771,7 +758,7 @@ def main() -> int:
         return 2
 
     if args.visibility_summary:
-        # 统计模式看的是分布，抽样没有意义，永远跑全量
+        # A distribution needs every scene; sampling would defeat the point
         return visibility_summary(scene_files, root,
                                   num_cams=args.num_cams,
                                   drop_list_path=args.drop_list)
@@ -811,8 +798,8 @@ def main() -> int:
                            else "; must start with 'ball_catch' or the ball-catch task "
                                 "branches are skipped"))
             if entry is None:
-                # 注册信息拿不到（未注册，或环境缺依赖）时，用 Stream25 的冻结契约兜底，
-                # 这样 JSON 层面的检查仍然能跑完
+                # Fall back to the frozen contract when registration is missing,
+                # so the JSON-level checks still run to completion.
                 entry = {
                     "camera_list": {2: ["front_left", "front_right"],
                                     3: ["front_left", "front_right", "lower_front"]},

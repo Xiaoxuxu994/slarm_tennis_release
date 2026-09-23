@@ -216,7 +216,7 @@ def main() -> int:
     CONSTANTS.write_text(src, encoding="utf-8")
     print(f"[ OK ] written (backup at {CONSTANTS.name}.bak)")
     print("")
-    print("★ constants.py is tracked by git. This edit is uncommitted, so any")
+    print("Note: constants.py is tracked by git. This edit is uncommitted, so any")
     print("  `git reset --hard` or `git checkout` throws it away, and the next run")
     print("  dies with KeyError on the dataset name -- often long after the pull that")
     print("  caused it. Commit it now:")

@@ -179,7 +179,7 @@ def angular_velocity_to_quaternion(omega, dt):
     Returns:
         quat: quaternion (Tensor), shape (..., 4) [w, x, y, z]
     """
-    rotvec = omega * dt  # rotation vector = angular velocity × time
+    rotvec = omega * dt  # rotation vector = angular velocity x time
     angle = torch.norm(rotvec, dim=-1, keepdim=True)  # rotation angle
     axis = rotvec / (angle + 1e-8)  # rotation axis (avoid division by zero)
 
@@ -193,7 +193,7 @@ def angular_velocity_to_quaternion(omega, dt):
 
 def quaternion_multiply(q1, q2):
     """
-    Quaternion multiplication (q1 ⊗ q2)
+    Quaternion multiplication (q1 (x) q2)
 
     Args:
         q1: quaternion (Tensor), shape (..., 4) [w, x, y, z]
@@ -259,7 +259,7 @@ def angle_axis_to_quaternion(angle_axis: torch.Tensor) -> torch.Tensor:
 
 def compute_normals_scales_torch(position_map: torch.Tensor):
     """
-    Compute normal direction for each point in the 3D position map (supports 4D input, B×H×W×3)
+    Compute normal direction for each point in the 3D position map (supports 4D input, BxHxWx3)
 
     Args:
         position_map: torch.Tensor, shape (B, H, W, 3), representing 3D position of each pixel
@@ -311,7 +311,7 @@ def compute_normals_scales_torch(position_map: torch.Tensor):
     dx = dx.permute(0, 2, 3, 1)
     dy = dy.permute(0, 2, 3, 1)
 
-    # compute normals (cross product dy × dx)
+    # compute normals (cross product dy x dx)
     normals_batch = torch.cross(dy, dx, dim=-1)
     # normalize
     norm = torch.norm(normals_batch, dim=-1, keepdim=True)
