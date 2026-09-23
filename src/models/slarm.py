@@ -527,17 +527,6 @@ class SLARM(nn.Module, PyTorchModelHubMixin):
             if self.add_camera_embed:
                 self.aggregator.pose_encoding_mlp = zero_module(self.aggregator.pose_encoding_mlp)
 
-        if self.ball_velocity_only_train:
-            for name, parameter in self.named_parameters():
-                parameter.requires_grad_(name.startswith("ball_velocity_head."))
-
-    def train(self, mode=True):
-        super().train(mode)
-        if getattr(self, "ball_velocity_only_train", False):
-            for name, child in self.named_children():
-                child.train(mode if name == "ball_velocity_head" else False)
-        return self
-
     def init_weights(self):
         def _basic_init(module):
             if isinstance(module, nn.Linear):
