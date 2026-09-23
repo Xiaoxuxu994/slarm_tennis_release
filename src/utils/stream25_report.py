@@ -1,16 +1,14 @@
-"""关键指标提取与报表。
+"""Key-metric extraction and the markdown tables built from it.
 
-被 scripts/eval_stream25_base.py（单次 eval 摘要表）和 tools/compare_evaluations.py
-（跨 ckpt 对比表）复用。只依赖标准库；阈值表按需延迟 import，避免拉起 torch。
+Shared by scripts/eval_stream25_base.py and tools/compare_evaluations.py. Standard
+library only; the threshold table is imported lazily so this never pulls in torch.
 
-metrics 结构约定（= evaluation.json 的顶层 "metrics"，即 aggregate scope）：
-  metrics[<scalar>][<bucket>]                 e.g. rgb_psnr / semantic_miou / ball_iou / rgb_psnr_p10 / depth_absrel
-  metrics["ball_depth_error_median"][<bucket>], metrics["ball_depth_error_p95"][<bucket>]
-  metrics["ms3_ball_velocity"]["median"/"p95"]（accel/jerk/static/context 同理）
-  metrics["frame24_position"]["median"/"p95"]
-  metrics["frame24_position_balltoken"/"ball_pos15_error"/"ball_vel15_error"]["median"/"p95"]
-      —— 仅当模型带内建 ball token (use_ball_token) 时存在；缺席时表格显示 n/a
-bucket ∈ {anchor, interpolation, near, mid, far, farthest}
+`metrics` is evaluation.json's top-level "metrics", the aggregate scope:
+  metrics[<scalar>][<bucket>]          rgb_psnr, semantic_miou, ball_iou, depth_absrel
+  metrics["ball_depth_error_median"][<bucket>]
+  metrics["ms3_ball_velocity"]["median" | "p95"]
+  metrics["frame24_position"]["median" | "p95"]
+bucket is one of anchor, interpolation, near, mid, far, farthest.
 """
 from __future__ import annotations
 
@@ -18,46 +16,19 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 # (label, direction, [(metric_key, subkey), ...], threshold_key)
-#   direction: "up" = 越大越好, "down" = 越小越好
-#   threshold_key: ACCEPTANCE_TABLE 里的键；None 表示不设门
+#   direction: "up" means larger is better, "down" means smaller is better
+#   threshold_key: a key in ACCEPTANCE_TABLE, or None for an ungated row
 KEY_METRICS: List[Tuple[str, str, List[Tuple[str, str]], Optional[str]]] = [
     ("frame24 position med / p95",    "down", [("frame24_position", "median"), ("frame24_position", "p95")], "frame24_position"),
-    # 内建 ball token 的并列口径（无 ball token 的模型这三行显示 n/a；不参与 acceptance gate）
-    ("frame24 balltoken med / p95",   "down", [("frame24_position_balltoken", "median"), ("frame24_position_balltoken", "p95")], None),
-    ("balltoken pos15 med / p95",     "down", [("ball_pos15_error", "median"), ("ball_pos15_error", "p95")], None),
-    ("balltoken vel15 med / p95",     "down", [("ball_vel15_error", "median"), ("ball_vel15_error", "p95")], None),
-    # 多帧弹道拟合读出：用历史位置 + 已知重力反解 (pos15, v15)，代替 head 直接回归速度。
-    # 只在 ball_prefix_supervision 打开的 ckpt 上有值。与上面三行并排看：
-    #   fit 的 vel15 明显更好而 pos15 持平 -> 直接回归速度是瓶颈，应换成拟合读出。
-    #   两者都没变好 -> 位置的逐帧误差本身就是瓶颈，拟合救不了。
-    ("balltoken fit frame24 med / p95", "down", [("frame24_position_balltoken_fit", "median"), ("frame24_position_balltoken_fit", "p95")], None),
-    ("balltoken fit pos15 med / p95",   "down", [("ball_pos15_error_balltoken_fit", "median"), ("ball_pos15_error_balltoken_fit", "p95")], None),
-    ("balltoken fit vel15 med / p95",   "down", [("ball_vel15_error_balltoken_fit", "median"), ("ball_vel15_error_balltoken_fit", "p95")], None),
-    # 逐 prefix 帧的位置误差。决定拟合该用几帧 —— 早期帧劣化超过后期约 1.6 倍时，
-    # 缩短时间跨度的代价就盖过去掉坏样本的好处（见 stream25_metrics.fit_ballistic_state）。
-    # 逐帧速度读出去重力后平均。spread 是这几个估计之间的散布：
-    #   spread ~ 0    -> 各帧读出实质相同，平均无用
-    #   spread 大且 vavg 误差明显低于 balltoken vel15 -> 逐帧读出带独立信息
-    ("balltoken vavg frame24 / vel15",  "down", [("frame24_position_balltoken_vavg", "median"), ("ball_vel15_error_balltoken_vavg", "median")], None),
-    ("balltoken vel15 spread",          "down", [("ball_vel15_spread_balltoken", "median")], None),
-    ("balltoken prefix pos f0 / f15",   "down", [("ball_prefix_pos_error_frame0", "median"), ("ball_pos15_error", "median")], None),
-    # 像素路径的多帧弹道拟合读出。和最上面的 frame24 position 直接可比（同为三目取最差）。
-    #   fit vel15 明显好 -> MS3 直接预测速度不是最优，换拟合读出，零训练。
-    #   constant >> scatter -> 逐帧误差主要是恒定偏置，拟合能赢很多。
-    #   constant ≈ scatter -> 误差主要是逐帧抖动，拟合只能小赢。
-    # 接球帧落点。★ 这是唯一跨 context offset 可比的数：frame24_* 的外推时长
-    # 随窗口滑动而变，catch_* 的目标固定在绝对时刻 catch_frame 上，所以
-    # "把观测窗口后移" 买到了多少必须看这两行。catch horizon 打印的是
-    # (catch_frame - 终端帧) 的秒数，滑窗后它会变短 —— 那正是收益的来源。
+    # Landing at the catch frame: the only row comparable across context offsets,
+    # because frame24_* measures a horizon that shrinks as the window slides.
     ("catch position med / p95",        "down", [("catch_position", "median"), ("catch_position", "p95")], None),
-    # 把落点误差按环轴拆开。环正对来球，轴向偏差只让球早到/晚到，不会打偏；
-    # 只有 inplane 决定球穿不穿得过环口。catch position 用的是 3D 模，把轴向
-    # 也算成了打偏，所以由它得出的成功率是**下界**，inplane 才是几何上诚实的。
-    #   inplane / catch 接近 1 -> 误差主要横向，现在这个成功率就差不多是对的
-    #   inplane / catch 明显 <1 -> 误差主要沿飞行方向，成功率被低估
+    # The landing error split along the ring axis. Axial error only makes the ball
+    # early or late; only the in-plane part decides whether it clears the opening.
+    # catch_position uses the 3D norm and so counts axial error as a miss, which
+    # makes any success rate derived from it a lower bound.
     ("catch position inplane med / p95", "down", [("catch_position_inplane", "median"), ("catch_position_inplane", "p95")], None),
     ("catch position axial med",        "down", [("catch_position_axial", "median")], None),
-    ("catch position balltoken",        "down", [("catch_position_balltoken", "median")], None),
     ("catch horizon s",                 "down", [("catch_horizon_s", "median")], None),
     ("pixel fit frame24 med / p95",     "down", [("frame24_position_fit", "median"), ("frame24_position_fit", "p95")], None),
     ("pixel fit pos15 med / p95",       "down", [("ball_pos15_error_fit", "median"), ("ball_pos15_error_fit", "p95")], None),
@@ -110,14 +81,14 @@ def extract_rows(metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _threshold(thr_key: Optional[str], sub: str):
     if not thr_key:
         return None
-    from src.utils.stream25_metrics import ACCEPTANCE_TABLE  # 延迟 import（避免拉 torch）
+    from src.utils.stream25_metrics import ACCEPTANCE_TABLE  # deferred: that module needs torch
     row = ACCEPTANCE_TABLE.get(thr_key)
     return row.get(sub) if isinstance(row, dict) else None
 
 
 def render_single_markdown(metrics: Dict[str, Any]) -> str:
-    """单次 eval 关键指标摘要：指标 | 值 | 阈值 | 达标。"""
-    out = ["| 指标 | 值 | 阈值 | 达标 |", "| --- | ---: | ---: | :---: |"]
+    """One eval's key metrics: metric | value | threshold | pass."""
+    out = ["| metric | value | threshold | pass |", "| --- | ---: | ---: | :---: |"]
     for row in extract_rows(metrics):
         vals, direction, paths = row["values"], row["direction"], row["paths"]
         val_str = " / ".join(_fmt(v) for v in vals)
@@ -131,24 +102,35 @@ def render_single_markdown(metrics: Dict[str, Any]) -> str:
     return "\n".join(out)
 
 
+#: Tag -> displayed text. The comparison logic tests the tag, never the wording.
+_VERDICT_TEXT = {
+    "n/a": "-",
+    "better": "improved",
+    "worse": "worse",
+    "much_worse": "much worse",
+    "same": "about the same",
+}
+
+
 def _verdict(base: float, cand: float, direction: str, tol: float = 0.02) -> str:
+    """Return a tag from _VERDICT_TEXT, not display text."""
     if math.isnan(base) or math.isnan(cand):
-        return "—"
+        return "n/a"
     denom = abs(base) if base != 0 else 1e-9
     rel = (cand - base) / denom
     better = (rel > tol) if direction == "up" else (rel < -tol)
     worse = (rel < -tol) if direction == "up" else (rel > tol)
     if better:
-        return "✅ 改善"
+        return "better"
     if worse:
-        return "❌ 明显退化" if abs(rel) > 0.5 else "❌ 退化"
-    return "≈ 基本一致"
+        return "much_worse" if abs(rel) > 0.5 else "worse"
+    return "same"
 
 
 def render_compare_markdown(metrics_a: Dict[str, Any], metrics_b: Dict[str, Any],
                             label_a: str = "A", label_b: str = "B") -> str:
-    """两次实验对比：指标 | A | B | 判断（含 p95 长尾提示）。"""
-    out = [f"| 指标 | {label_a} | {label_b} | 判断 |", "| --- | ---: | ---: | --- |"]
+    """Two runs side by side, flagging a p95 tail the median hides."""
+    out = [f"| metric | {label_a} | {label_b} | verdict |", "| --- | ---: | ---: | --- |"]
     for ra, rb in zip(extract_rows(metrics_a), extract_rows(metrics_b)):
         va = " / ".join(_fmt(v) for v in ra["values"])
         vb = " / ".join(_fmt(v) for v in rb["values"])
@@ -157,9 +139,11 @@ def render_compare_markdown(metrics_a: Dict[str, Any], metrics_b: Dict[str, Any]
         if len(ra["values"]) > 1:
             v_med = _verdict(ra["values"][0], rb["values"][0], ra["direction"])
             v_p95 = _verdict(ra["values"][1], rb["values"][1], ra["direction"])
-            if "退化" in v_p95 and "退化" not in v_med:
-                note = "（p95 长尾）"
-            elif "明显" in v_p95 and "明显" not in v_med:
-                note = "（p95 长尾更重）"
-        out.append(f"| {ra['label']} | {va} | {vb} | {verdict}{note} |")
+            worse_p95 = v_p95 in ("worse", "much_worse")
+            worse_med = v_med in ("worse", "much_worse")
+            if worse_p95 and not worse_med:
+                note = " (p95 tail)"
+            elif v_p95 == "much_worse" and v_med != "much_worse":
+                note = " (heavier p95 tail)"
+        out.append(f"| {ra['label']} | {va} | {vb} | {_VERDICT_TEXT[verdict]}{note} |")
     return "\n".join(out)

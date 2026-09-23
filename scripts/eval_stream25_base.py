@@ -21,9 +21,8 @@ if str(WORKTREE) not in sys.path:
 
 from src.utils.stream25_metrics import (
     ACCEPTANCE_TABLE,
-    # ★ 这两个常量是冻结的三视图默认值，只为向后兼容再导出（测试从本模块 import）。
-    #   运行期一律用 get_camera_order() / get_required_eval_scopes()，
-    #   否则双视图配置下名单对不上，num_views 校验会直接 raise。
+    # Frozen tri-view defaults, re-exported for tests only; at run time always use
+    # get_camera_order() / get_required_eval_scopes(), or a two-view config raises.
     CAMERA_ORDER,
     REQUIRED_EVAL_SCOPES,
     get_camera_order,
@@ -54,40 +53,34 @@ from src.dataset.stream25 import (
     STREAM25_CONTEXT_FRAMES,
 )
 
-#: 终端观测在**目标列表**里的下标。
-#
-# ★ 这是滑窗里最容易搞反的一件事，我自己就搞反过一次（IndexError: index 24 is
-#   out of bounds for dimension 1 with size 22）。ball_position_rig /
-#   ball_velocity_rig 走的是 _collate_stream25_frames 的 preserve_time_axes，
-#   时间轴就是**目标列表**，长度 25-offset，不是绝对帧号。offset 0 时下标恰好
-#   等于帧号，所以一路没暴露。
-#
-#   shifted_contract 保证任何 offset 下 targets[15] 都是终端观测，所以这些
-#   张量一律用固定下标 15，**不加 offset**。只有做时间算术（到接球帧还有多少
-#   秒）时才需要绝对帧号 = 15 + offset。
+#: Index of the terminal observation in the TARGET LIST, never a frame number.
+#  ball_position_rig / ball_velocity_rig are indexed by target, so their axis is
+#  25-offset long; adding the offset here reads past the end (or, worse, reads a
+#  plausible wrong instant). Absolute frame 15 + offset is only for time arithmetic.
 TERMINAL_TARGET_INDEX = STREAM25_CONTEXT_FRAMES[-1]
 
-# 并列的落点读出（不进 ACCEPTANCE_TABLE，只做对照）。
+# Side-by-side landing readouts; not gated, for comparison only.
 SIDE_METRIC_NAMES = (
-    # 像素路径的多帧弹道拟合读出：把 frame 0/3/6/9/12/15 各自渲染出的球心拿去拟合，
-    # 代替 MS3 头直接预测的 v15。不需要 ball token，任何 ckpt 都有。
+    # Refit (pos15, v15) from the ball centres rendered at frames 0..15 instead of
+    # taking v15 from the MS3 head. Every checkpoint can compute this.
     "frame24_position_fit",
     "ball_pos15_error_fit",
     "ball_vel15_error_fit",
-    # 逐帧位置误差，以及它拆成「跨帧恒定」与「逐帧抖动」两部分。
-    # 只有抖动会传进拟合速度：constant 越大、scatter 越小，拟合赢得越多。
+    # Per-frame position error, split into a constant offset and frame-to-frame
+    # scatter. Only the scatter reaches the fitted velocity; the constant cancels.
     "pixel_pos_error_frame0", "pixel_pos_error_frame3", "pixel_pos_error_frame6",
     "pixel_pos_error_frame9", "pixel_pos_error_frame12", "pixel_pos_error_frame15",
     "pixel_pos_error_constant_m",
     "pixel_pos_error_scatter_m",
-    # 接球帧落点。★ 唯一跨 context offset 可比的落点指标：frame24_* 的外推时长
-    # 随窗口滑动而变，catch_* 固定打在绝对时刻 stream25_catch_frame 上。
+    # Landing at the catch frame -- the only landing metric comparable across
+    # context offsets, since frame24_* measures a horizon that shrinks as the
+    # window slides while this one is pinned to an absolute instant.
     "catch_position",
     "catch_position_inplane",
     "catch_position_axial",
     "catch_horizon_s",
 )
-# 这些指标跨场景聚合时，p95 子键取场景间的 95 分位（与 frame24_position 同口径）。
+# Their p95 sub-key is the 95th percentile across scenes, as for frame24_position.
 _P95_ACROSS_SCENES = ("frame24_position",) + SIDE_METRIC_NAMES
 
 FINAL_TEST_SENTINEL_DIR = str(
@@ -401,10 +394,9 @@ def compute_rendered_frame24_position_errors(
 ) -> List[float]:
     """Return one rendered frame-24 position error per named view.
 
-    ``ball_surface_offset`` 单位米，默认 0 = 历史口径。非零时把反投影得到的球
-    **前表面**点沿视线推到球**心**，消掉那个恒定偏置（见
-    stream25_metrics.apply_ball_surface_offset）。它会改变 frame24_position 的
-    定义，所以必须显式打开，不能默认生效 —— 否则和历史数字不可比。
+    ``ball_surface_offset`` in metres pushes the unprojected point from the ball's
+    near surface to its centre. It changes what frame24_position means, so it is
+    off by default and must be asked for.
     """
     predicted = rendered_landing_positions_per_view(
         depth15, semantic15, ms3_15, ray_origins15, ray_directions15,
@@ -729,10 +721,8 @@ def _summarize_scene_scope(
         "p95": frame24_sample_count,
     }
 
-    # ball token 的并列指标：模型直接回归的球状态是全场景一个值，与 view scope 无关，
-    # 所以 aggregate 与三个具名视图 scope 记录同一个数。单场景内 median==p95（只有一个样本）；
-    # 分位数的差异在 _aggregate_scene_scope_metrics 的跨场景聚合里才产生。
-    # 没有 ball token 时不写入这些键，指标在报告中直接缺席，而不是记成 nan/失败。
+    # One value per scene, independent of view, so every scope records the same
+    # number; the percentile spread only appears when scenes are aggregated.
     combined_scalar_metrics = dict(history_fit_metrics or {})
     for name in SIDE_METRIC_NAMES:
         value = combined_scalar_metrics.get(name)
@@ -795,9 +785,8 @@ def compute_stream25_scene_metrics(
     if any(tensor.shape[1] != num_views for tensor in view_tensors):
         raise ValueError("Stream25 evaluator received inconsistent target view axes")
 
-    # 目标帧数随窗口滑动变短：offset k 只剩 25-k 个 target（契约的 range(25) 被
-    # 窗口从尾部吃掉）。这里必须按**实际到达的数量**遍历，写死 25 会在 offset>0 时
-    # 越界。数量仍然核对一遍，这样别的原因造成的静默截断照样会炸出来。
+    # Offset k leaves 25-k targets, so loop over what actually arrived; a hardcoded
+    # 25 runs off the end. The count is still checked, to catch other truncation.
     num_targets = int(gt_depth.shape[0])
     expected_targets = len(STREAM25_ALL_TARGET_FRAMES) - int(context_offset)
     if num_targets != expected_targets:
@@ -896,12 +885,10 @@ def compute_stream25_scene_metrics(
         ).item()
         * timespan
     )
-    # ★ 零外推陷阱。landing_index 取的是**存下来的最后一帧**（绝对帧 24），窗口
-    #   越往后滑，它离终端观测越近：offset 0 还有 0.300 s，offset 9 是 0.000 s。
-    #   到那一步 frame24_position 就退化成"终端帧的位置误差"，数字会比真的落点
-    #   误差**小**，扫表的人会把它读成滑窗效果拔群。所以零外推时干脆不发这个
-    #   指标 —— 让 gate 报 MISSING，比给一个好看的错数安全。
-    #   catch_position 不受影响：它固定打在绝对时刻 stream25_catch_frame 上。
+    # At offset 9 the last stored frame IS the terminal observation, so
+    # frame24_position would degrade into "error at the terminal frame" -- a
+    # smaller number that reads like the sliding window helped. Emit nothing and
+    # let the gate report MISSING rather than publish a flattering wrong value.
     if dt <= 0:
         print(f"[eval] frame24_* skipped: the window at offset +{context_offset} "
               f"leaves no extrapolation to the last stored frame "
@@ -919,7 +906,7 @@ def compute_stream25_scene_metrics(
         ball_surface_offset=ball_surface_offset,
     )
 
-    # 并列的像素路径多帧拟合落点：所有 ckpt 都能算，不依赖 ball token。
+    # The pixel-path multi-frame fit; every checkpoint can compute it.
     _gt_positions = data_dict.get("ball_position_rig")
     history_fit_metrics = compute_rendered_history_fit_metrics(
         pred_depth, pred_sem,
@@ -954,9 +941,8 @@ def compute_stream25_scene_metrics(
     # day the simulator gains drag this continuation has to be replaced by stored
     # GT (see docs/EXPERIMENTS_AND_ERROR_BUDGET.md).
     catch_metrics: Dict[str, float] = {}
-    # 两个不同的东西，混起来就是上面那个 IndexError 的来源：
-    #   TERMINAL_TARGET_INDEX  张量下标，恒为 15
-    #   terminal_frame         绝对帧号，= 15 + offset，只用来算还剩多少秒
+    # Two different things: TERMINAL_TARGET_INDEX is a tensor index, always 15;
+    # terminal_frame is the absolute frame, 15 + offset, for time arithmetic only.
     terminal_frame = STREAM25_CONTEXT_FRAMES[-1] + int(context_offset)
     _gt_v_all = data_dict.get("ball_velocity_rig")
     if catch_frame and _gt_positions is not None and _gt_v_all is not None:
@@ -1110,33 +1096,26 @@ def _json_safe(value):
 
 
 def _single_sample_collate(batch):
-    """DataLoader collate：batch_size=1，取出唯一 sample 原样返回。
+    """Return the single sample unchanged; batch_size is 1.
 
-    读盘（dataset[index]）在 worker 进程里并行完成；collate 与搬 device 仍由主进程的
-    collate_and_prepare 负责（CUDA 张量不能在 worker 中创建）。返回值与原先 dataset[index]
-    完全一致，因此不改变任何评测数值，只让 IO 与 GPU 前向/渲染重叠。"""
+    Reading happens in worker processes while the main process collates and moves
+    to device, so IO overlaps the GPU without changing any number."""
     return batch[0]
 
 
 def _render_failing_gates(result: Dict[str, Any]) -> List[str]:
-    """列出真正让 overall 变成 FAIL 的门。
+    """List the gates that actually made overall FAIL.
 
-    ★ 这一节存在的理由：上面那张"关键指标"表只渲染 **aggregate**，而 overall 是在
-      ("aggregate",) + 每个具名相机 上分别判的（apply_scoped_acceptance_gates）。
-      所以完全可能出现"表格全绿 + Overall FAIL"，而报告不给任何线索 ——
-      那种输出无法据以行动。
-
-    ★ 有三种失败形态，后两种和模型质量无关，别当成训练不够：
-        FAIL                 指标越线。
-        INSUFFICIENT_SAMPLES 该 (scope, bucket) 一个有效样本都没有。被网兜挡住的
-                             lower_front 在 far/farthest 桶里没有球，就是这一种；
-                             它靠继续训练**修不好**，要么按视图豁免，要么改门。
-        NONFINITE            指标是 NaN/inf，通常是上游除零。
+    The metrics table above shows only the aggregate scope while gates are judged
+    per camera too, so a report can read all-green and still FAIL. Two of the three
+    failure kinds say nothing about model quality: INSUFFICIENT_SAMPLES means that
+    scope never saw the ball in that bucket, which more training cannot fix, and
+    NONFINITE is usually a division by zero upstream.
     """
     lines: List[str] = []
     for gate_id, rec in (result.get("gates") or {}).items():
         if rec == "NONFINITE":
-            lines.append(f"- `{gate_id}` — **NONFINITE**（指标是 NaN/inf）")
+            lines.append(f"- `{gate_id}` - **NONFINITE** (metric is NaN or inf)")
             continue
         if not isinstance(rec, dict) or rec.get("passed", True):
             continue
@@ -1144,22 +1123,22 @@ def _render_failing_gates(result: Dict[str, Any]) -> List[str]:
         if status == "INSUFFICIENT_SAMPLES":
             lines.append(
                 f"- `{gate_id}` — **INSUFFICIENT_SAMPLES**"
-                f"（有效样本 {rec.get('valid_count')} < {rec.get('minimum_valid_count')}）"
-                " — 该视图在这个时间桶里看不到球，训练修不好"
+                f" ({rec.get('valid_count')} valid < {rec.get('minimum_valid_count')} required)"
+                " - this view cannot see the ball in this bucket; training will not fix it"
             )
         else:
             lines.append(
-                f"- `{gate_id}` — **{status}**: {rec.get('value'):.4f} "
-                f"vs 阈值 {rec.get('limit'):.4f}"
+                f"- `{gate_id}` - **{status}**: {rec.get('value'):.4f} "
+                f"vs limit {rec.get('limit'):.4f}"
             )
     if not lines:
         lines.append(
-            "（没有未通过的门。若 Overall 仍是 FAIL，看 `missing_gates`："
-            "ACCEPTANCE_TABLE 里有、但指标里根本没算出来的门也会判负。）"
+            "(No gate failed. If Overall is still FAIL, check `missing_gates`: "
+            "a gate in ACCEPTANCE_TABLE whose metric was never computed also counts as a loss.)"
         )
     missing = result.get("missing_gates") or []
     if missing:
-        lines += ["", f"`missing_gates`（{len(missing)} 项）: " +
+        lines += ["", f"`missing_gates` ({len(missing)}): " +
                   ", ".join(f"`{m}`" for m in missing[:20]) +
                   (" ..." if len(missing) > 20 else "")]
     return lines
@@ -1245,18 +1224,16 @@ def run_evaluation(
     )
     evaluation_seed = set_evaluation_seed(args.seed)
 
-    # gate 报告是按相机名逐视图出的，所以名单必须来自本次 config 的
-    # camera_list[num_max_cameras]，而不是模块里冻结的三视图默认值。
-    # 双视图 (num_max_cameras: 2) 走这一步之后才不会在 num_views 校验处 raise。
+    # Gates are reported per camera name, so the list has to come from this run's
+    # camera_list, not the module's frozen tri-view default.
     from src.utils.misc import camera_names_from_arguments
 
     camera_order = set_camera_order(
         camera_names_from_arguments(args, role="evaluation")
     )
 
-    # 球半径补偿：把反投影得到的球**前表面**点推到球**心**，消掉一个恒定偏置。
-    # 默认 0 = 历史口径，frame24_position 与此前所有实验可比。
-    # 半径从 config 读（--ball-radius 可覆盖），不写死 —— 24cm 那批球径不同。
+    # Push the unprojected near-surface point to the ball centre. Off by default so
+    # frame24_position stays comparable; the radius comes from the config.
     if ball_radius is None:
         ball_radius = float(getattr(args, "stream25_ball_radius", 0.0325) or 0.0325)
     ball_surface_offset = float(ball_radius_compensation) * float(ball_radius)
@@ -1299,7 +1276,8 @@ def run_evaluation(
             f"read catch_position instead.",
             flush=True,
         )
-        # 剩余外推 = 最后一个存下来的帧 - 终端观测。它随 offset 缩短，到 +9 归零。
+        # Remaining extrapolation: last stored frame minus terminal observation,
+        # which shrinks with the offset and reaches zero at +9.
         span = STREAM25_ALL_TARGET_FRAMES[-1] - STREAM25_ALL_TARGET_FRAMES[0]
         remaining = STREAM25_ALL_TARGET_FRAMES[-1] - terminal_frame
         print(
@@ -1326,12 +1304,12 @@ def run_evaluation(
 
     loader_kwargs = dict(
         batch_size=1,
-        shuffle=False,               # SequentialSampler：index 顺序与原逐场景一致，结果可复现
+        shuffle=False,               # sequential, so results stay reproducible
         num_workers=num_workers,
         collate_fn=_single_sample_collate,
     )
     if num_workers > 0:
-        # 每个 worker 预取 2 个场景，读盘与 GPU 前向/渲染重叠，消除 GPU 空等 IO（GPU-Util=0）
+        # Prefetch so reading overlaps the GPU instead of leaving it idle.
         loader_kwargs["prefetch_factor"] = 2
     loader = torch.utils.data.DataLoader(dataset, **loader_kwargs)
 
@@ -1394,17 +1372,15 @@ def _finalize_and_write(
     context_offset=0,
     catch_frame=0,
 ):
-    """对（可能来自多个 shard 合并的）全量 scene_results 做一次完整聚合并写出。
+    """Aggregate every scene result and write the report.
 
-    ★ 球心补偿的三个值必须由调用方传进来，不能靠闭包 —— 这个函数是独立的顶层
-      函数（为了支持多 shard 合并），run_evaluation 的局部变量在这里不可见。
-      commit a325081 正是漏了这一步：函数体里引用了 ball_surface_offset，
-      于是**每一次 eval 都 NameError**，连不开补偿的也一样，因为写进 result 的
-      那两行是无条件执行的。
+    This is a top-level function so several shards can be merged, which means
+    run_evaluation's locals are NOT visible here: everything it needs must be
+    passed in. Referring to one by accident is a NameError on every eval.
     """
     from tools.stream25_runtime import sha256_file
 
-    # 按 scene_index 排序，保证与单卡逐场景顺序一致、结果可复现
+    # Sort by scene_index so the result is independent of shard order.
     scene_results = sorted(scene_results, key=lambda s: s.get("scene_index", 0))
 
     gate_result = summarize_stream25_scene_results(scene_results)
@@ -1485,16 +1461,16 @@ def _finalize_and_write(
              if result["context_offset"] else
              f"- Context window: **frozen {list(STREAM25_CONTEXT_FRAMES)}**"),
             (f"- Ball-surface compensation: **{result['ball_surface_offset_m']*100:.2f} cm**"
-             f"（{result['ball_radius_compensation']:.3f} x r={result['ball_radius_m']:.4f} m）"
-             "　★ frame24_position 与未开此项的历史数字不可比"
+             f" ({result['ball_radius_compensation']:.3f} x r={result['ball_radius_m']:.4f} m)"
+             " -- frame24_position is NOT comparable with runs that had this off"
              if result["ball_surface_offset_m"] else
-             "- Ball-surface compensation: off（历史口径，frame24_position 测的是球前表面 vs 球心）"),
+             "- Ball-surface compensation: off (frame24_position measures the ball's near surface, not its centre)"),
             "",
-            "## 关键指标（aggregate）",
+            "## Key metrics (aggregate)",
             "",
             render_single_markdown(result["metrics"]),
             "",
-            "## 未通过的门",
+            "## Failing gates",
             "",
             *_render_failing_gates(result),
             "",
@@ -1521,17 +1497,17 @@ if __name__ == "__main__":
     parser.add_argument("--selection-report", default=None)
     parser.add_argument("--reference", action="store_true")
     parser.add_argument("--render-chunk", type=int, default=None,
-                        help="覆盖 render_target_chunk_size（config 默认 1 = 逐帧渲染）；可选加速渲染")
+                        help="override render_target_chunk_size; larger renders faster")
     parser.add_argument("--num-workers", type=int, default=8,
-                        help="DataLoader 数据加载并行 worker 数（本地盘建议 8；0=主进程串行，退回原行为）")
+                        help="DataLoader workers; 8 suits a local disk, 0 loads in the main process")
     parser.add_argument("--ball-radius-compensation", "--ball_radius_compensation",
                         dest="ball_radius_compensation", type=float, nargs="?",
                         const=BALL_SURFACE_COEFFICIENT_MEASURED, default=0.0,
-                        help="把反投影的球前表面点沿视线推到球心，消掉一个恒定偏置。"
-                             "传系数 c，补偿量 = c x 球半径；不带值则用实测的 "
-                             f"{BALL_SURFACE_COEFFICIENT_MEASURED}（球语义掩码 median 池化下测得，"
-                             "与本脚本口径一致）。理论参考：圆盘均值 0.667 / 圆盘中位 0.707 / "
-                             "最近点 1.0。默认 0 = 关闭，与历史数字可比。")
+                        help="push the unprojected near-surface point to the ball centre, "
+                             "removing a constant bias. Takes a coefficient c; the offset is "
+                             f"c x radius. Without a value it uses the measured "
+                             f"{BALL_SURFACE_COEFFICIENT_MEASURED}. Default 0 keeps "
+                             "frame24_position comparable with past runs.")
     parser.add_argument("--fit-frames", "--fit_frames",
                         "--balltoken-fit-frames", "--balltoken_fit_frames",
                         dest="fit_frames", default=None,
@@ -1542,12 +1518,12 @@ if __name__ == "__main__":
                              "them when pixel_pos_error_frame* shows they are >1.6x worse.")
     parser.add_argument("--ball-radius", "--ball_radius", dest="ball_radius",
                         type=float, default=None,
-                        help="球半径（米）。默认读 config 的 stream25_ball_radius（0.0325）")
+                        help="ball radius in metres; defaults to the config's stream25_ball_radius")
     parser.add_argument("--context-offset", "--context_offset", dest="context_offset",
                         type=int, default=0,
-                        help="把观测窗口整体后移 N 帧（仅评测）。0 = 冻结契约，"
-                             "与历史数字逐字节可比；9 = context 变成 9,12,...,24。"
-                             "跨 offset 只能比 catch_position，不能比 frame24_*")
+                        help="slide the observation window N frames later (evaluation only). "
+                             "0 is the frozen contract; 9 makes context 9,12,...,24. "
+                             "Across offsets compare catch_position, never frame24_*")
     args = parser.parse_args()
 
     sel = None
