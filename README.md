@@ -133,8 +133,8 @@ configs/               实验 YAML
 | 文件 | 用途 |
 |---|---|
 | `configs/slarm_stream25_24cm_triview_window6.yaml` | 三目 base |
-| `configs/exp0827_003_..._nolseg_anneal.yml` | backbone（cosine 退火终点） |
-| `configs/exp0915_001_..._pixel_finetune.yml` | 当前主线：0908_10k 像素路径微调 |
+| `configs/exp0827_003_slarm_stream25_6.5cm_triview_window6_nolseg_anneal.yml` | backbone（cosine 退火终点） |
+| `configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml` | 当前主线：0908_10k 像素路径微调 |
 | `run_sh/train.sh` | 训练启动（单/多卡自动） |
 | `run_sh/eval.sh` | 评估启动（输出路径自动） |
 | `src/models/slarm.py` | 主模型（Gaussian / MS3 / terminal 外推） |
@@ -142,126 +142,221 @@ configs/               实验 YAML
 | `src/utils/stream25_losses.py` | 重建损失组装 |
 | `src/utils/stream25_metrics.py` | 评估指标 / acceptance 门 |
 
-## 6. 安装
+## 6. 环境搭建
+
+在一台干净的机器上，下面这段照抄即可。gsplat 要现场编译，是整个过程里唯一可能出问题的一步。
 
 ```bash
-# 创建 conda 环境
+git clone git@github.com:Xiaoxuxu994/slarm_tennis_release.git
+cd slarm_tennis_release
+
 conda create -n SLARM python=3.10 -y
 conda activate SLARM
 
-# 更快的依赖求解（可选）
-conda install mamba -n base -c conda-forge
+# gsplat 需要 nvcc。系统已有 CUDA 12.1 可跳过这两行。
+conda install -c conda-forge mamba -y
+mamba install nvidia/label/cuda-12.1.1::cuda-toolkit -c nvidia/label/cuda-12.1.1 -y
+export CUDA_HOME=$CONDA_PREFIX
 
-# 可选：gsplat 因 g++/CUDA 编译失败时，在环境内装 CUDA 12.1
-mamba install nvidia/label/cuda-12.1.1::cuda-toolkit -c nvidia/label/cuda-12.1.1
-# export CUDA_HOME=$CONDA_PREFIX
+pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 \
+    --index-url https://download.pytorch.org/whl/cu121
 
-# PyTorch (CUDA 12.1)
-pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+# gsplat 固定在这个 commit。换版本会改变光栅化数值，历史指标不再可比。
+pip install --no-build-isolation \
+    git+https://github.com/nerfstudio-project/gsplat.git@937e29912570c372bed6747a5c9bf85fed877bae
+
+pip install -r requirements.txt
+pip install pytest
 
 # 可选：可微体素化
 pip install torch-scatter -f https://data.pyg.org/whl/torch-2.3.1+cu121.html
-
-# gsplat（torch 2.3.1 + cuda 12.1 对应版本，用环境内 cuda 12.1 编译）
-pip install git+https://github.com/nerfstudio-project/gsplat.git@937e29912570c372bed6747a5c9bf85fed877bae --no-build-isolation
-
-# python 依赖
-pip install -r requirements.txt
 ```
 
-## 7. 训练
+### 6.1 验证环境（不需要数据）
 
-### 7.1 配置
+```bash
+pytest tests -q
+python -c "import torch, gsplat; print(torch.__version__, torch.cuda.is_available())"
+```
 
-| 字段 | 含义 |
-|---|---|
-| `dataset`, `data_root` | 数据集注册名和数据根目录 |
-| `input_size` | `[H,W]`，当前 `[320,240]` |
-| `patch_size` | ViT patch 边长，当前 8 |
-| `num_max_cameras` | 双目为 2，三目为 3 |
-| `num_context_timesteps` | 每个 episode 的流式观察数，当前 6 |
-| `num_target_timesteps` | 每步监督 target 数，当前 7 |
-| `context_stride` | 观察帧之间相差 3 个仿真帧 |
-| `timespan` | frame 0 到 frame 24 的物理时间，0.8 秒 |
-| `mode` | 必须是 `window_6` |
-| `terminal_context_extrapolation` | frame 15 负责向 frame 24 外推 |
-| `stream25_*_weight` | 各重建损失进入总损失的权重 |
-| `stream25_ms3_*_scale` | 速度、加速度、jerk 的物理归一化尺度 |
-| `stream25_semantic_class_weights` | 可选的四类语义权重，只能来自训练集统计 |
-| `lr`, `stream25_trunk_lr` | head 与共享 trunk 的学习率 |
-| `load_from` | 只加载模型权重的初始化 checkpoint |
-| `train_annotation`, `eval_annotation` | full train/validation manifest |
-| `num_iterations` | 双目 20k，三目 40k |
-| `ckpt_every_n_iters` | checkpoint 保存间隔 |
+全部测试都不读数据集、不需要 GPU，几十秒内跑完。**这是判断环境装没装对的第一道关**，
+也是改完代码之后的回归网。跑不过就别往下走。第二条期望输出 `2.3.1+cu121 True`，
+`gsplat` import 不报错说明编译成功了。
 
-### 7.2 启动
+## 7. 数据接入
 
-编辑 `run_sh/train.sh` 顶部的 `GPUS` 和 `CONFIG`，然后：
+训练和评估都需要数据，仓库里不含数据。拿到一棵裸数据树之后，按下面四步接进来。
+**顺序不能换**：后一步依赖前一步的产物。
+
+数据树的形状（`datasets.py` 按这个读）：
+
+```text
+<data_root>/
+  scene_list/<dataset>_train.txt             每行一个标注 JSON 的相对路径
+  scene_list/<dataset>_validation.txt
+  datasets/<dataset>/<relative_image_path>   图像，路径由标注 JSON 的字段给出
+  <标注 JSON 若干>                            位置任意，scene_list 里写相对 data_root 的路径
+```
+
+`<dataset>` 这个名字必须与标注 JSON 里的 `"dataset"` 字段**逐字一致**，而且要以
+`ball_catch` 开头 —— `datasets.py` 有 4 处 `startswith("ball_catch")` 分流，名字不匹配
+的话球轨迹、语义和 MS3 监督会被**静默跳过**，训练照常跑，只是学不到球。
+
+```bash
+# ① 生成 scene_list（等间隔抽验证集，不取末尾连续一段）
+python tools/make_scene_list.py --data-root data/slarm_data \
+    --dataset ball_catch_triview_0908_10k --val-count 20
+
+# ② 注册到 src/dataset/constants.py（改 DATASETS 和 DATASET_DICT 两处）
+python tools/register_dataset.py --data-root data/slarm_data
+
+# ③ 体检：相机数、帧数、timespan、重力、位置与速度是否自洽
+python tools/check_dataset_contract.py --data-root data/slarm_data
+
+# ④ 逐帧检查轨迹
+python tools/inspect_trajectory.py --data-root data/slarm_data
+```
+
+① 和 ② 默认**只打印不落盘**，确认输出无误后再加 `--write` 重跑一次
+（② 会先备份 `constants.py.bak`）。
+
+③ 取的是全帧加速度均值，末尾一两帧异常（球落地、被接住、轨迹被截断）会被平均掉，
+这是它的盲点，所以 ④ 才要逐帧看。③ 装了 `opencv-python` 会额外校验语义图与可见性
+标注是否一致，值得装。
+
+四步都通过之后，把 config 里的四个字段指向它。当前主线 config `exp0915_001` 用的是：
+
+```yaml
+dataset: [ball_catch_triview_0908_10k]
+data_root: data/slarm_data
+train_annotation: scene_list/ball_catch_triview_0908_10k_train.txt
+eval_annotation: scene_list/ball_catch_triview_0908_10k_validation.txt
+```
+
+> **待补**：数据本身的产出／同步方式（仿真器导出参数、rsync 来源），以及初始权重
+> `ckpt_019999.pth` 的分发方式。两者都不在仓库里，换机器时要单独搬。
+
+## 8. 训练
 
 ```bash
 bash run_sh/train.sh
 ```
 
-- `GPUS="0"`（单卡）自动用 `python`，`GPUS="4,5,6,7"`（多卡）自动用 `torchrun`；
-- 命令行额外参数会透传给 `main_slarm.py`，例如：
+默认：4 卡、`configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml`、
+从 `exp0908_001/ckpt_019999.pth` 初始化。改卡数或 config 用环境变量，不必编辑脚本：
 
 ```bash
-bash run_sh/train.sh --num_iterations 30000
+GPUS=0                  bash run_sh/train.sh        # 单卡，自动走 python 而非 torchrun
+GPUS=4,5,6,7            bash run_sh/train.sh
+CONFIG=configs/<别的>.yml bash run_sh/train.sh
+RESUME=1                bash run_sh/train.sh        # 断点续训，其他都不用动
+bash run_sh/train.sh --num_iterations 30000         # 额外参数透传给 main_slarm.py
 ```
 
-训练输出落在 `work_dirs/<project>/<exp_name>/`，由 config 里的 `exp_name` 决定。
+**开跑前先确认权重真的加载上了**：
 
-> 另有 `run_sh/train_stream25_base.sh`，在 exec `main_slarm.py` 之前把 config 与初始 checkpoint 的 sha256 打进日志，便于事后追溯某次训练到底用的哪份权重。
+```bash
+SLARM_SINGLE_PROCESS=1 python tools/check_model_init.py \
+    --config configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml
+```
 
-### 7.3 loss
+输出落在 `work_dirs/<project>/<exp_name>/`，由 config 的 `exp_name` 决定。
+TensorBoard event 在 `<output_dir>/<project>/<exp_name>/tensorboard/`。
 
-[`src/utils/stream25_losses.py`](src/utils/stream25_losses.py) 隔离计算以下重建 loss（woLSeg 版已移除 LSeg 特征监督）：
+### 8.1 卡数是实验口径的一部分
 
-| Loss                   |   权重 |
-| ---------------------- | -----: |
-| full RGB               | `1.00` |
-| LPIPS                  | `0.05` |
-| ball RGB               | `0.50` |
-| full depth relative    | `1.00` |
-| ball metric depth      | `0.02` |
-| four-class semantic    | `1.00` |
-| ball MS3               | `1.00` |
-| static MS3             | `0.25` |
+`batch_size` 是 per-GPU，全局 batch = `batch_size × 卡数`，代码里**没有梯度累积**，
+而且各 config 的 `lr` 是写死的、不随卡数自动缩放。所以卡数减半 = 全局 batch 减半
+**且**每样本步长翻倍，两个变量一起动，跟别的实验就不可比了。核对某次实验实际用了几张：
+
+```bash
+grep "Global batch size" work_dirs/slarm/<exp_name>/logs/log.txt
+```
+
+### 8.2 loss
+
+`src/utils/stream25_losses.py` 组装以下重建 loss（woLSeg 版已移除 LSeg 特征监督）：
+
+| Loss | 权重 |
+| --- | ---: |
+| full RGB | `1.00` |
+| LPIPS | `0.05` |
+| ball RGB | `0.50` |
+| full depth relative | `1.00` |
+| ball metric depth | `0.02` |
+| four-class semantic | `1.00` |
+| ball MS3 | `1.00` |
+| static MS3 | `0.25` |
 | opacity regularization | `0.10` |
 
-球在 frame 16–24 某一目离屏时，只把该 frame-eye 的 ball-region loss/metric 记为 N/A；全图 loss 仍有效，也不会冻结该视角后续全部帧。
+球在 frame 16–24 某一目离屏时，只把该 frame-eye 的 ball-region loss/metric 记为 N/A；
+全图 loss 仍然有效，也不会冻结该视角后续全部帧。
 
-## 8. 评估（流式重建）
+## 9. 评估
 
-该命令是独立评估，不会继续训练。它按 `[0,3,6,9,12,15]` 真流式（StreamSession）输入，重建 frame 0–24，输出 RGB、depth、四类语义/ball IoU、MS3 速度/加速度/jerk、frame-24 位置，以及 anchor/interpolation/extrapolation 分组指标。
+独立评估，不继续训练。按 `[0,3,6,9,12,15]` 真流式（StreamSession）输入，重建 frame 0–24。
 
-编辑 `run_sh/eval.sh` 顶部的 `CONFIG` 和 `CKPT`，然后：
+编辑 `run_sh/eval.sh` 顶部的 `CONFIG` 和 `CKPTS`（支持通配符，会逐个评测并自动出跨
+ckpt 对照表），然后：
 
 ```bash
 bash run_sh/eval.sh
+python tools/report_catch.py work_dirs/slarm/stream25_eval/<config名>/ --markdown
 ```
 
-输出目录自动为 `work_dirs/slarm/stream25_eval/<config名>/<ckpt名>/`（切换 config 或 ckpt 不会互相覆盖），内含 `evaluation.json` 和 `evaluation.md`。
+第二条把整个 ckpt 扫描读成一张表：frame24 与接球点的落点误差（中位／p90／p95）和成功率。
+输出在 `work_dirs/slarm/stream25_eval/<config名>/<ckpt名>/`，含 `evaluation.json`
+与 `evaluation.md`，切换 config／ckpt 不会互相覆盖。
 
-## 9. 推理：生成重建视频
+### 9.1 成功率怎么算
 
-对指定场景整段前向渲染 `[0,N)` 帧（`N` 可 >25 做外推）生成重建视频：
+判据是几何的：球必须整体穿过圆环，所以球心到真值落点的距离要小于
+
+```
+圆环半径 − 球半径 = 0.135 − 0.0325 = 0.1025 m
+```
+
+报表对同一阈值给两个距离：**3D 距离**（保守，是成功率的数学下界）和**平面内距离**
+（把误差沿球到达方向分解，只算垂直于该方向的分量 —— 沿轴的误差只是早到晚到，
+不影响能不能穿过环）。汇报时用哪个都行，但要说清是哪个。
+
+### 9.2 滑动观测窗口
+
+`OFFSETS=(0 3 6 9)` 可以把观测窗口整体后移而**不需要重训** —— 时间嵌入是相对窗口
+第一帧算的，窗口后移时模型收到的时间值逐字节不变，变的只有图像里球更近。
+
+| offset | context | 窗口中点 Z | 终端帧 | 到 frame 45 的外推 |
+|---|---|---|---|---|
+| 0 | 0,3,…,15 | 4.78 m | 15 | 1.005 s |
+| 9 | 9,12,…,24 | 3.81 m | 24 | 0.700 s |
+
+★ 跨 offset **只能比 `catch_position`**。`frame24_*` 的外推时长随窗口滑动而变，
+测的是不同时刻的量，横着比没有意义。offset 0 逐字节等于冻结契约，历史数字仍可比。
+
+## 10. 可视化
 
 ```bash
-bash run_sh/render_stream25_base.sh \
-  --config configs/slarm_stream25_24cm_triview_window6.yaml \
-  --checkpoint ckpts/triview_stage_a.pth \
-  --data_root data/SLARM_data \
-  --scene_ids 0,1,2 \
-  --num_frames 40 \
-  --output_dir output/stream25_triview
+# 三视角未来帧预测视频（整段前向，默认渲染到 frame 45 的外推段）
+bash run_sh/render.sh
+
+# 从 evaluation.json 里挑场景：落点最准 + 球重建最好
+python tools/pick_scenes.py \
+    work_dirs/slarm/stream25_eval/<config名>/<ckpt名>/evaluation.json
+
+# 导出球轨迹（.csv/.json/.html/_3d.png）。--scene 给逗号列表时一次模型加载跑多个场景，
+# 文件名带 _scene0003 后缀；单场景时就用 --output 给的名字。
+python tools/export_ball_track.py \
+    --config configs/exp0915_001_slarm_stream25_0908_10k_pixel_finetune.yml \
+    --checkpoint work_dirs/slarm/exp0915_001_slarm_stream25_0908_10k_pixel_finetune/checkpoints/ckpt_019999.pth \
+    --scene 3 --output output_vis/track
+
+# 轨迹动画（只读 csv，不用 GPU，可在笔记本上重排版）
+python tools/animate_ball_forecast.py output_vis/track.csv --bare
 ```
 
-| 参数 | 含义 |
-|---|---|
-| `--config` | 与 checkpoint 完全匹配的双目或三目 Stream25 配置 |
-| `--checkpoint` | 已训练的重建 checkpoint |
-| `--data_root` | 含 `scene_list/`、`annotations/` 和各模态数据的根目录 |
-| `--scene_ids` | validation manifest 内的局部下标，不是 annotation 中的全局 scene 编号 |
-| `--num_frames` | 从 frame 0 开始重建的总帧数，必须大于 0；默认 25 |
-| `--output_dir` | 每个局部下标生成一个 `scene_XXXX.mp4` |
+`--bare` 去掉标题和图例，适合贴进有独立说明文字的 PPT。
+
+## 11. 结果
+
+> 待补：训练精度与评估结果。
+
