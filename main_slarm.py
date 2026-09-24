@@ -236,7 +236,7 @@ def get_args_parser():
     # Task-agnostic base that streams native-stereo observations [0,3,6] and reconstructs
     # RGB / metric depth / four-class task semantics / dense MS3 for frames [0,25). All knobs
     # are OFF by default so legacy SLARM / ball-state runs are byte-for-byte unaffected; the
-    # Stream25 config turns them on. See docs/superpowers/specs/2026-07-21-stream25-*.
+    # Stream25 config turns them on.
     parser.add_argument("--stream25_reconstruction_loss", action="store_true",
                         help="assemble the ten explicit Stream25 losses instead of the legacy total")
     parser.add_argument("--enable_task_semantic_head", action="store_true",

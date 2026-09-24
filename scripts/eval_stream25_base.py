@@ -938,8 +938,7 @@ def compute_stream25_scene_metrics(
     # GT at the catch frame is the analytic continuation of the GT terminal state.
     # That is exact here, not an approximation, because the simulator has no air
     # drag. Real drag would add roughly 10 cm over 1 s at this ball speed, so the
-    # day the simulator gains drag this continuation has to be replaced by stored
-    # GT (see docs/EXPERIMENTS_AND_ERROR_BUDGET.md).
+    # day the simulator gains drag this continuation has to be replaced by stored GT.
     catch_metrics: Dict[str, float] = {}
     # Two different things: TERMINAL_TARGET_INDEX is a tensor index, always 15;
     # terminal_frame is the absolute frame, 15 + offset, for time arithmetic only.

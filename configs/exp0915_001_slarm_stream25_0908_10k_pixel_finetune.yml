@@ -1,6 +1,8 @@
 # Pixel/MS3-only continuation on new data; no ball-token or residual modules.
 # Assumes the same resolution, camera names, time and coordinate contract as 0903_2k.
-# See docs/PIXEL_10K_FINETUNE.md before creating manifests or starting training.
+# Read README section 7 before building the manifests: the dataset name must match
+# the annotation JSON's "dataset" field and start with ball_catch, or ball supervision
+# is skipped without an error.
 model: slarm
 dataset: [ball_catch_triview_0908_10k]
 data_root: data/slarm_data

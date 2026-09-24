@@ -18,7 +18,7 @@ CKPT_DIR="output/exp0825_002_slarm_stream25_6.5cm_triview_window6_nolseg_loadpre
 ITERS="029999 033999 035999 037999 039999"
 # ITERS="auto"
 
-LIMIT=40                 # scenes; matches the baseline in docs/BALL_LANDING_FINDINGS.md
+LIMIT=40                 # scenes; the count every published baseline used
 MASK_SOURCE="pred"       # pred / gt / both; pred ~= gt, so pred alone halves the time
 GRAVITY="0,0,-9.81"
 SPLIT="validation"
